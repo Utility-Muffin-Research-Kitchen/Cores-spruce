@@ -73,6 +73,32 @@ Outputs:
 - Some cores may still fail on macOS because their upstream build systems are
   platform-specific or currently broken outside the existing ARM Docker lanes.
 
+## MLP1 local builds
+
+MLP1 builds use the local `mlp1-toolchain` Docker image and stage libretro
+cores directly into the SD payload shape.
+
+Quick start:
+
+```sh
+cd /Volumes/Storage/UMRK/Cores-spruce
+./build-mlp1.sh                  # genesis_plus_gx vertical slice
+./build-mlp1.sh --stock-parity   # all 26 stock-parity cores
+```
+
+Useful commands:
+
+```sh
+./build-mlp1.sh --list-stock-parity
+./build-mlp1.sh genesis_plus_gx mgba snes9x
+```
+
+Outputs:
+
+- cores: `output/mlp1/cores/*_libretro.so`
+- info files: `output/mlp1/info/*.info`
+- build report: `output/mlp1/build-report.txt`
+
 ## TODO: cores not yet buildable
 
 These cores are shipped by spruceOS but can't be built from libretro-super and need custom build processes:
