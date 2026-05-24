@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TOOLCHAIN_IMAGE="${TOOLCHAIN_IMAGE:-ghcr.io/utility-muffin-research-kitchen/mlp1-toolchain:local}"
 TOOLCHAIN_REPO="${TOOLCHAIN_REPO:-/Volumes/Storage/UMRK/mlp1-toolchain}"
+SPRUCE_OS_DIR="${SPRUCE_OS_DIR:-/Volumes/Storage/GitHub/spruceOS}"
 CORES_WORKDIR="${CORES_WORKDIR:-$REPO_ROOT/workdir}"
 LIBRETRO_SUPER_SRC_DIR="${LIBRETRO_SUPER_SRC_DIR:-$CORES_WORKDIR/src/libretro-super}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/output/mlp1}"
@@ -42,12 +43,221 @@ STOCK_PARITY_CORES=(
     yabasanshiro
 )
 
+SPRUCE_INSTALLED_CORES_FALLBACK=(
+    2048
+    81
+    a5200
+    ardens
+    arduous
+    atari800
+    bk
+    bluemsx
+    cap32
+    chailove
+    chimerasnes
+    crocods
+    daphne
+    dosbox_pure
+    easyrpg
+    ecwolf
+    fake08
+    fbalpha2012
+    fbneo
+    fceumm
+    ffmpeg
+    flycast
+    fmsx
+    freechaf
+    freeintv
+    frodo
+    fuse
+    gambatte
+    gearboy
+    gearcoleco
+    gearsystem
+    genesis_plus_gx
+    genesis_plus_gx_wide
+    gme
+    gpsp
+    gw
+    handy
+    hatari
+    km_duckswanstation_xtreme_amped
+    km_flycast_xtreme
+    km_ludicrousn64_2k22_xtreme_amped
+    km_parallel_n64_xtreme_amped_turbo
+    libgametank
+    lowresnx
+    lutro
+    mame2003_plus
+    mednafen_lynx
+    mednafen_ngp
+    mednafen_pce_fast
+    mednafen_pcfx
+    mednafen_supafaust
+    mednafen_supergrafx
+    mednafen_vb
+    mednafen_wswan
+    mgba
+    mkxp-z
+    mu
+    mupen64plus
+    mupen64plus_next
+    neocd
+    nestopia
+    np2kai
+    numero
+    o2em
+    opera
+    parallel_n64
+    pcsx_rearmed
+    picodrive
+    pokemini
+    potator
+    prboom
+    prosystem
+    puae2021
+    puzzlescript
+    px68k
+    quasi88
+    quicknes
+    race
+    reminiscence
+    retro8
+    sameduck
+    scummvm
+    snes9x
+    snes9x2002
+    snes9x2005
+    snes9x2005_plus
+    snes9x2010
+    squirreljme
+    stella2014
+    swanstation
+    tgbdual
+    theodore
+    tic80
+    tyrquake
+    uae4arm
+    uw8
+    uzem
+    vecx
+    vemulator
+    vice_x64
+    vice_xvic
+    x1
+    yabasanshiro
+    yabasanshiro_a133p
+    yabasanshiro_smartpros
+)
+
+SPRUCE_LIBRETRO_SUPER_CORES=(
+    2048
+    81
+    a5200
+    ardens
+    arduous
+    atari800
+    bk
+    bluemsx
+    cap32
+    chailove
+    chimerasnes
+    crocods
+    daphne
+    dosbox_pure
+    easyrpg
+    ecwolf
+    fbalpha2012
+    fbneo
+    fceumm
+    ffmpeg
+    flycast
+    fmsx
+    freechaf
+    freeintv
+    frodo
+    fuse
+    gambatte
+    gearboy
+    gearcoleco
+    gearsystem
+    genesis_plus_gx
+    genesis_plus_gx_wide
+    gme
+    gw
+    handy
+    hatari
+    lowresnx
+    lutro
+    mame2003_plus
+    mednafen_lynx
+    mednafen_ngp
+    mednafen_pce_fast
+    mednafen_pcfx
+    mednafen_supafaust
+    mednafen_supergrafx
+    mednafen_vb
+    mednafen_wswan
+    mgba
+    mu
+    mupen64plus_next
+    neocd
+    nestopia
+    np2kai
+    numero
+    o2em
+    opera
+    parallel_n64
+    pcsx_rearmed
+    picodrive
+    pokemini
+    potator
+    prboom
+    prosystem
+    puae2021
+    puzzlescript
+    px68k
+    quasi88
+    quicknes
+    race
+    reminiscence
+    retro8
+    sameduck
+    snes9x
+    snes9x2002
+    snes9x2005
+    snes9x2005_plus
+    snes9x2010
+    squirreljme
+    stella2014
+    swanstation
+    tgbdual
+    theodore
+    tic80
+    tyrquake
+    uae4arm
+    uw8
+    uzem
+    vecx
+    vemulator
+    vice_x64
+    vice_xvic
+    x1
+    yabasanshiro
+)
+
 usage() {
     cat <<EOF
 Usage:
   ./build-mlp1.sh [core ...]
   ./build-mlp1.sh --stock-parity
+  ./build-mlp1.sh --spruce-all
+  ./build-mlp1.sh --spruce-buildable
   ./build-mlp1.sh --list-stock-parity
+  ./build-mlp1.sh --list-spruce-installed
+  ./build-mlp1.sh --list-spruce-buildable
+  ./build-mlp1.sh --list-spruce-deferred
 
 Default with no core arguments builds genesis_plus_gx for the first MLP1 slice.
 Outputs:
@@ -57,6 +267,100 @@ Outputs:
 EOF
 }
 
+print_array() {
+    printf '%s\n' "$@"
+}
+
+array_contains() {
+    local needle="$1"
+    shift
+    local item
+    for item in "$@"; do
+        if [[ "$item" == "$needle" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+spruce_installed_cores() {
+    local retroarch_dir="$SPRUCE_OS_DIR/RetroArch/.retroarch"
+    local core_dirs=()
+
+    if [[ -d "$retroarch_dir/cores" ]]; then
+        core_dirs+=("$retroarch_dir/cores")
+    fi
+    if [[ -d "$retroarch_dir/cores64" ]]; then
+        core_dirs+=("$retroarch_dir/cores64")
+    fi
+
+    if [[ ${#core_dirs[@]} -gt 0 ]]; then
+        find "${core_dirs[@]}" -maxdepth 1 -type f -name '*_libretro.so' -print \
+            | sed 's#.*/##; s/_libretro\.so$//' \
+            | sort -u
+        return
+    fi
+
+    print_array "${SPRUCE_INSTALLED_CORES_FALLBACK[@]}"
+}
+
+spruce_buildable_cores() {
+    local core
+    while IFS= read -r core; do
+        if array_contains "$core" "${SPRUCE_LIBRETRO_SUPER_CORES[@]}"; then
+            printf '%s\n' "$core"
+        fi
+    done < <(spruce_installed_cores)
+}
+
+spruce_deferred_reason() {
+    case "$1" in
+        fake08|gpsp|km_duckswanstation_xtreme_amped|km_parallel_n64_xtreme_amped_turbo|libgametank)
+            printf 'custom Cores-spruce workflow exists, MLP1 local builder not ported yet'
+            ;;
+        *)
+            printf 'no generic libretro-super build lane in Cores-spruce'
+            ;;
+    esac
+}
+
+spruce_deferred_cores() {
+    local core
+    while IFS= read -r core; do
+        if ! array_contains "$core" "${SPRUCE_LIBRETRO_SUPER_CORES[@]}"; then
+            printf '%s\n' "$core"
+        fi
+    done < <(spruce_installed_cores)
+}
+
+print_spruce_deferred_report() {
+    local core
+    while IFS= read -r core; do
+        printf '%s\t%s\n' "$core" "$(spruce_deferred_reason "$core")"
+    done < <(spruce_deferred_cores)
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --list-stock-parity)
+            print_array "${STOCK_PARITY_CORES[@]}"
+            exit 0
+            ;;
+        --list-spruce-installed|--list-spruce-all)
+            spruce_installed_cores
+            exit 0
+            ;;
+        --list-spruce-buildable)
+            spruce_buildable_cores
+            exit 0
+            ;;
+        --list-spruce-deferred)
+            print_spruce_deferred_report
+            exit 0
+            ;;
+    esac
+done
+
 if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
     if ! docker image inspect "$TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
         echo "missing Docker image: $TOOLCHAIN_IMAGE" >&2
@@ -64,29 +368,47 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
         exit 1
     fi
 
-    docker run --rm \
-        -e IN_MLP1_CONTAINER=1 \
-        -e LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-}" \
-        -e LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-}" \
-        -e CORES_WORKDIR=/workspace/workdir \
-        -e LIBRETRO_SUPER_SRC_DIR=/workspace/workdir/src/libretro-super \
-        -e OUTPUT_DIR=/workspace/output/mlp1 \
-        -e CORES_OUTPUT_DIR=/workspace/output/mlp1/cores \
-        -e INFO_OUTPUT_DIR=/workspace/output/mlp1/info \
-        -e REPORT_PATH=/workspace/output/mlp1/build-report.txt \
-        -e JOBS="${JOBS:-}" \
-        -v "$REPO_ROOT":/workspace \
-        -v "$TOOLCHAIN_REPO":/mlp1-toolchain:ro \
-        -w /workspace \
-        "$TOOLCHAIN_IMAGE" \
-        /workspace/build-mlp1.sh "$@"
+    docker_args=(
+        --rm
+        -e IN_MLP1_CONTAINER=1
+        -e LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-}"
+        -e LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-}"
+        -e CORES_WORKDIR=/workspace/workdir
+        -e LIBRETRO_SUPER_SRC_DIR=/workspace/workdir/src/libretro-super
+        -e OUTPUT_DIR=/workspace/output/mlp1
+        -e CORES_OUTPUT_DIR=/workspace/output/mlp1/cores
+        -e INFO_OUTPUT_DIR=/workspace/output/mlp1/info
+        -e REPORT_PATH=/workspace/output/mlp1/build-report.txt
+        -e JOBS="${JOBS:-}"
+        -v "$REPO_ROOT":/workspace
+        -v "$TOOLCHAIN_REPO":/mlp1-toolchain:ro
+        -w /workspace
+    )
+
+    if [[ -d "$SPRUCE_OS_DIR" ]]; then
+        docker_args+=(-e SPRUCE_OS_DIR=/spruceOS -v "$SPRUCE_OS_DIR":/spruceOS:ro)
+    else
+        docker_args+=(-e SPRUCE_OS_DIR="$SPRUCE_OS_DIR")
+    fi
+
+    docker run "${docker_args[@]}" "$TOOLCHAIN_IMAGE" /workspace/build-mlp1.sh "$@"
     exit $?
 fi
 
 JOBS="${JOBS:-$(nproc)}"
 
 declare -a requested_cores=()
-stock_parity=0
+declare -a deferred_cores=()
+build_mode=explicit
+
+set_build_mode() {
+    local mode="$1"
+    if [[ "$build_mode" != "explicit" && "$build_mode" != "$mode" ]]; then
+        echo "build modes cannot be combined." >&2
+        exit 1
+    fi
+    build_mode="$mode"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -95,10 +417,29 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --stock-parity)
-            stock_parity=1
+            set_build_mode stock-parity
             ;;
-        --list-stock-parity)
-            printf '%s\n' "${STOCK_PARITY_CORES[@]}"
+        --spruce-all|--spruce-installed)
+            set_build_mode spruce-all
+            ;;
+        --spruce-buildable)
+            set_build_mode spruce-buildable
+            ;;
+        --list-stock-parity|--list-spruce-installed|--list-spruce-all|--list-spruce-buildable|--list-spruce-deferred)
+            case "$1" in
+                --list-stock-parity)
+                    print_array "${STOCK_PARITY_CORES[@]}"
+                    ;;
+                --list-spruce-installed|--list-spruce-all)
+                    spruce_installed_cores
+                    ;;
+                --list-spruce-buildable)
+                    spruce_buildable_cores
+                    ;;
+                --list-spruce-deferred)
+                    print_spruce_deferred_report
+                    ;;
+            esac
             exit 0
             ;;
         *)
@@ -108,16 +449,34 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-if [[ "$stock_parity" -eq 1 && ${#requested_cores[@]} -gt 0 ]]; then
-    echo "--stock-parity cannot be combined with explicit core names." >&2
+if [[ "$build_mode" != "explicit" && ${#requested_cores[@]} -gt 0 ]]; then
+    echo "$build_mode cannot be combined with explicit core names." >&2
     exit 1
 fi
 
-if [[ "$stock_parity" -eq 1 ]]; then
-    requested_cores=("${STOCK_PARITY_CORES[@]}")
-elif [[ ${#requested_cores[@]} -eq 0 ]]; then
-    requested_cores=(genesis_plus_gx)
-fi
+case "$build_mode" in
+    stock-parity)
+        requested_cores=("${STOCK_PARITY_CORES[@]}")
+        ;;
+    spruce-all)
+        while IFS= read -r core; do
+            requested_cores+=("$core")
+        done < <(spruce_buildable_cores)
+        while IFS= read -r core; do
+            deferred_cores+=("$core")
+        done < <(spruce_deferred_cores)
+        ;;
+    spruce-buildable)
+        while IFS= read -r core; do
+            requested_cores+=("$core")
+        done < <(spruce_buildable_cores)
+        ;;
+    explicit)
+        if [[ ${#requested_cores[@]} -eq 0 ]]; then
+            requested_cores=(genesis_plus_gx)
+        fi
+        ;;
+esac
 
 "$REPO_ROOT/fetch-libretro-super.sh"
 
@@ -128,7 +487,16 @@ echo "MLP1 core build"
 echo "libretro-super: $LIBRETRO_SUPER_SRC_DIR"
 echo "output:          $OUTPUT_DIR"
 echo "jobs:            $JOBS"
+if [[ "$build_mode" == spruce-* ]]; then
+    echo "spruceOS:        $SPRUCE_OS_DIR"
+    echo "requested:       ${#requested_cores[@]}"
+    echo "deferred:        ${#deferred_cores[@]}"
+fi
 echo
+
+for core in "${deferred_cores[@]}"; do
+    printf 'deferred %s %s\n' "$core" "$(spruce_deferred_reason "$core")" >>"$REPORT_PATH"
+done
 
 verify_core() {
     local core_path="$1"
@@ -216,6 +584,11 @@ cat "$REPORT_PATH"
 
 if [[ ${#failed_cores[@]} -gt 0 ]]; then
     echo "Failed cores: ${failed_cores[*]}" >&2
+    exit 1
+fi
+
+if [[ ${#deferred_cores[@]} -gt 0 ]]; then
+    echo "Deferred cores: ${deferred_cores[*]}" >&2
     exit 1
 fi
 

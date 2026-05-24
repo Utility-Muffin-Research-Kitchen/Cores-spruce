@@ -84,14 +84,27 @@ Quick start:
 cd /Volumes/Storage/UMRK/Cores-spruce
 ./build-mlp1.sh                  # genesis_plus_gx vertical slice
 ./build-mlp1.sh --stock-parity   # all 26 stock-parity cores
+./build-mlp1.sh --spruce-all     # build generic Spruce cores, report deferred
 ```
 
 Useful commands:
 
 ```sh
 ./build-mlp1.sh --list-stock-parity
+./build-mlp1.sh --list-spruce-installed
+./build-mlp1.sh --list-spruce-buildable
+./build-mlp1.sh --list-spruce-deferred
 ./build-mlp1.sh genesis_plus_gx mgba snes9x
 ```
+
+The Spruce lane reads installed core names from
+`/Volumes/Storage/GitHub/spruceOS/RetroArch/.retroarch/cores{,64}` when that
+checkout is available. `--spruce-buildable` only builds the generic
+`libretro-super` subset; `--spruce-all` builds that subset and records the
+remaining Spruce cores as deferred in the report.
+
+Custom Spruce workflows still need MLP1 ports before they can join the generic
+batch. Use `--list-spruce-deferred` for the current per-core reason list.
 
 Outputs:
 
@@ -101,9 +114,18 @@ Outputs:
 
 ## TODO: cores not yet buildable
 
-These cores are shipped by spruceOS but can't be built from libretro-super and need custom build processes:
+These cores are shipped by spruceOS but need more work before they can join the
+MLP1 generic build lane:
 
-- [ ] **mkxp-z** — hyphen in name breaks libretro-super's bash variable parsing
-- [ ] **mupen64plus** — removed from libretro-super (replaced by mupen64plus_next)
-- [ ] **km_flycast_xtreme** — KMFDManic/morpheuscast_xtreme fork uses bare `as` for ARM64 assembly, not cross-compile friendly
+- [ ] **fake08** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
+- [ ] **gpsp** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
+- [ ] **km_duckswanstation_xtreme_amped** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
+- [ ] **km_flycast_xtreme** — no generic libretro-super build lane in Cores-spruce
 - [ ] **km_ludicrousn64_2k22_xtreme_amped** — KMFDManic fork has broken aarch64 dynarec source and missing includes
+- [ ] **km_parallel_n64_xtreme_amped_turbo** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
+- [ ] **libgametank** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
+- [ ] **mkxp-z** — no generic libretro-super build lane in Cores-spruce
+- [ ] **mupen64plus** — no generic libretro-super build lane in Cores-spruce
+- [ ] **scummvm** — no generic libretro-super build lane in Cores-spruce
+- [ ] **yabasanshiro_a133p** — no generic libretro-super build lane in Cores-spruce
+- [ ] **yabasanshiro_smartpros** — no generic libretro-super build lane in Cores-spruce
