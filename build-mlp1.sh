@@ -2,10 +2,18 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_TOOLCHAIN_REPO=""
+if [[ -d "$REPO_ROOT/../mlp1-toolchain" ]]; then
+    DEFAULT_TOOLCHAIN_REPO="$(cd "$REPO_ROOT/../mlp1-toolchain" && pwd)"
+fi
+DEFAULT_SPRUCE_OS_DIR=""
+if [[ -d "$REPO_ROOT/../spruceOS" ]]; then
+    DEFAULT_SPRUCE_OS_DIR="$(cd "$REPO_ROOT/../spruceOS" && pwd)"
+fi
 
 TOOLCHAIN_IMAGE="${TOOLCHAIN_IMAGE:-ghcr.io/utility-muffin-research-kitchen/mlp1-toolchain:local}"
-TOOLCHAIN_REPO="${TOOLCHAIN_REPO:-/Volumes/Storage/UMRK/mlp1-toolchain}"
-SPRUCE_OS_DIR="${SPRUCE_OS_DIR:-/Volumes/Storage/GitHub/spruceOS}"
+TOOLCHAIN_REPO="${TOOLCHAIN_REPO:-$DEFAULT_TOOLCHAIN_REPO}"
+SPRUCE_OS_DIR="${SPRUCE_OS_DIR:-$DEFAULT_SPRUCE_OS_DIR}"
 CORES_WORKDIR="${CORES_WORKDIR:-$REPO_ROOT/workdir}"
 LIBRETRO_SUPER_SRC_DIR="${LIBRETRO_SUPER_SRC_DIR:-$CORES_WORKDIR/src/libretro-super}"
 EASYRPG_REF="${EASYRPG_REF:-}"
@@ -289,6 +297,11 @@ array_contains() {
 }
 
 spruce_installed_cores() {
+    if [[ -z "$SPRUCE_OS_DIR" ]]; then
+        print_array "${SPRUCE_INSTALLED_CORES_FALLBACK[@]}"
+        return
+    fi
+
     local retroarch_dir="$SPRUCE_OS_DIR/RetroArch/.retroarch"
     local core_dirs=()
 
@@ -367,6 +380,10 @@ for arg in "$@"; do
 done
 
 if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
+    if [[ -z "$TOOLCHAIN_REPO" ]]; then
+        echo "TOOLCHAIN_REPO is required when ../mlp1-toolchain is not present." >&2
+        exit 1
+    fi
     if ! docker image inspect "$TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
         echo "missing Docker image: $TOOLCHAIN_IMAGE" >&2
         echo "build it with: make -C $TOOLCHAIN_REPO image" >&2
@@ -623,12 +640,12 @@ copy_core_info() {
         return 0
     fi
 
-    if [[ -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/info/$info_file" ]]; then
+    if [[ -n "$SPRUCE_OS_DIR" && -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/info/$info_file" ]]; then
         cp -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/info/$info_file" "$INFO_OUTPUT_DIR/$info_file"
         return 0
     fi
 
-    if [[ -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/cores/$info_file" ]]; then
+    if [[ -n "$SPRUCE_OS_DIR" && -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/cores/$info_file" ]]; then
         cp -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/cores/$info_file" "$INFO_OUTPUT_DIR/$info_file"
         return 0
     fi

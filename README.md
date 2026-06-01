@@ -30,7 +30,6 @@ core set as `.dylib` libretro cores for RetroArch on Mac.
 Quick start:
 
 ```sh
-cd /Volumes/Storage/UMRK/Cores-spruce
 ./bootstrap-mac.sh
 ./build-mac.sh gambatte mgba
 ```
@@ -81,7 +80,6 @@ cores directly into the SD payload shape.
 Quick start:
 
 ```sh
-cd /Volumes/Storage/UMRK/Cores-spruce
 ./build-mlp1.sh                  # genesis_plus_gx vertical slice
 ./build-mlp1.sh --stock-parity   # all 26 stock-parity cores
 ./build-mlp1.sh --spruce-all     # build generic Spruce cores, report deferred
@@ -97,9 +95,8 @@ Useful commands:
 ./build-mlp1.sh genesis_plus_gx mgba snes9x
 ```
 
-The Spruce lane reads installed core names from
-`/Volumes/Storage/GitHub/spruceOS/RetroArch/.retroarch/cores{,64}` when that
-checkout is available. `--spruce-buildable` only builds the generic
+The Spruce lane reads installed core names from `SPRUCE_OS_DIR` or an adjacent
+`../spruceOS` checkout when available. `--spruce-buildable` only builds the generic
 `libretro-super` subset; `--spruce-all` builds that subset and records the
 remaining Spruce cores as deferred in the report.
 
