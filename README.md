@@ -1,6 +1,10 @@
 # Cores-spruce
 
-Build bot for libretro cores targeting spruceOS handheld devices. Builds 32-bit (armhf) and 64-bit (arm64) cores using [libretro-super](https://github.com/libretro/libretro-super).
+UMRK's libretro core builder forked from the spruceOS core build lane. The
+inherited workflows still target spruceOS handheld devices, and this workspace
+adds local macOS and MLP1 build paths using
+[libretro-super](https://github.com/libretro/libretro-super) plus a few
+repo-owned special builders.
 
 ## Supported devices
 
@@ -108,21 +112,24 @@ Outputs:
 - cores: `output/mlp1/cores/*_libretro.so`
 - info files: `output/mlp1/info/*.info`
 - build report: `output/mlp1/build-report.txt`
+- JSON build report: `output/mlp1/build-report.json`
 
-## TODO: cores not yet buildable
+`--stock-parity` includes a few repo-owned special builders, including
+`easyrpg`, `fake08`, `flycast`, `mame`, `mupen64plus_next`, `swanstation`, and
+`yabasanshiro`, in addition to generic `libretro-super` cores.
 
-These cores are shipped by spruceOS but need more work before they can join the
-MLP1 generic build lane:
+`--spruce-all` is intentionally stricter: it builds the generic
+`libretro-super` subset and records non-generic Spruce cores as deferred. Use
+the script for the current deferred list instead of trusting a static README
+copy:
 
-- [ ] **fake08** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
-- [ ] **gpsp** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
-- [ ] **km_duckswanstation_xtreme_amped** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
-- [ ] **km_flycast_xtreme** — no generic libretro-super build lane in Cores-spruce
-- [ ] **km_ludicrousn64_2k22_xtreme_amped** — KMFDManic fork has broken aarch64 dynarec source and missing includes
-- [ ] **km_parallel_n64_xtreme_amped_turbo** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
-- [ ] **libgametank** — custom Cores-spruce workflow exists; MLP1 local builder not ported yet
-- [ ] **mkxp-z** — no generic libretro-super build lane in Cores-spruce
-- [ ] **mupen64plus** — no generic libretro-super build lane in Cores-spruce
-- [ ] **scummvm** — no generic libretro-super build lane in Cores-spruce
-- [ ] **yabasanshiro_a133p** — no generic libretro-super build lane in Cores-spruce
-- [ ] **yabasanshiro_smartpros** — no generic libretro-super build lane in Cores-spruce
+```sh
+./build-mlp1.sh --list-spruce-deferred
+```
+
+If a core appears in that deferred report but also has a stock-parity special
+builder, the deferred status applies only to the generic Spruce batch.
+
+The text and JSON reports include `built`, `failed`, and `deferred` rows, plus
+the staged core filename, info filename, ELF machine, and maximum GLIBC version
+where available.
