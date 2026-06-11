@@ -27,7 +27,6 @@ REPORT_JSON_PATH="${REPORT_JSON_PATH:-${REPORT_PATH%.txt}.json}"
 JOBS="${JOBS:-}"
 
 STOCK_PARITY_CORES=(
-    2048
     mednafen_ngp
     mednafen_pce_fast
     mednafen_wswan
