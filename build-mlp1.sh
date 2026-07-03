@@ -25,6 +25,7 @@ INFO_OUTPUT_DIR="${INFO_OUTPUT_DIR:-$OUTPUT_DIR/info}"
 REPORT_PATH="${REPORT_PATH:-$OUTPUT_DIR/build-report.txt}"
 REPORT_JSON_PATH="${REPORT_JSON_PATH:-${REPORT_PATH%.txt}.json}"
 JOBS="${JOBS:-}"
+MLP1_BUILD_PROFILE="${MLP1_BUILD_PROFILE:-release}"
 
 STOCK_PARITY_CORES=(
     mednafen_ngp
@@ -402,6 +403,7 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
         -e REPORT_PATH=/workspace/output/mlp1/build-report.txt
         -e REPORT_JSON_PATH=/workspace/output/mlp1/build-report.json
         -e JOBS="${JOBS:-}"
+        -e MLP1_BUILD_PROFILE="$MLP1_BUILD_PROFILE"
         -v "$REPO_ROOT":/workspace
         -v "$TOOLCHAIN_REPO":/mlp1-toolchain:ro
         -w /workspace
@@ -418,6 +420,18 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
 fi
 
 JOBS="${JOBS:-$(nproc)}"
+
+if [[ -f /opt/mlp1-toolchain/umrk/mlp1-build-flags.env ]]; then
+    . /opt/mlp1-toolchain/umrk/mlp1-build-flags.env
+elif [[ -f /mlp1-toolchain/flags/mlp1-build-flags.env ]]; then
+    . /mlp1-toolchain/flags/mlp1-build-flags.env
+else
+    UMRK_MLP1_TARGET_SOC="rk3566"
+    UMRK_MLP1_TARGET_CPU="cortex-a55"
+    UMRK_MLP1_PROFILE_CFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
+    UMRK_MLP1_PROFILE_CXXFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
+    UMRK_MLP1_PROFILE_LDFLAGS="-Wl,--gc-sections"
+fi
 
 declare -a requested_cores=()
 declare -a deferred_cores=()
@@ -527,8 +541,9 @@ report_add_row() {
     local reason="${5:-}"
     local machine="${6:-}"
     local max_glibc="${7:-}"
+    local tuning="${8:-}"
 
-    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc")
+    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning")
 }
 
 write_json_report() {
@@ -544,6 +559,12 @@ write_json_report() {
         printf '  "version": 1,\n'
         printf '  "platform": "mlp1",\n'
         printf '  "build_mode": "%s",\n' "$(json_escape "$build_mode")"
+        printf '  "target_soc": "%s",\n' "$(json_escape "$UMRK_MLP1_TARGET_SOC")"
+        printf '  "target_cpu": "%s",\n' "$(json_escape "$UMRK_MLP1_TARGET_CPU")"
+        printf '  "build_profile": "%s",\n' "$(json_escape "$MLP1_BUILD_PROFILE")"
+        printf '  "cflags": "%s",\n' "$(json_escape "$UMRK_MLP1_PROFILE_CFLAGS")"
+        printf '  "cxxflags": "%s",\n' "$(json_escape "$UMRK_MLP1_PROFILE_CXXFLAGS")"
+        printf '  "ldflags": "%s",\n' "$(json_escape "$UMRK_MLP1_PROFILE_LDFLAGS")"
         printf '  "status": "%s",\n' "$status"
         printf '  "requested_count": %d,\n' "${#requested_cores[@]}"
         printf '  "failed_count": %d,\n' "$failed_count"
@@ -555,7 +576,7 @@ write_json_report() {
         printf '  "cores": [\n'
         local row index=0
         for row in "${REPORT_ROWS[@]}"; do
-            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc <<<"$row"
+            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning <<<"$row"
             if [[ "$index" -gt 0 ]]; then
                 printf ',\n'
             fi
@@ -566,7 +587,8 @@ write_json_report() {
             printf '      "info_file": "%s",\n' "$(json_escape "$info_file")"
             printf '      "reason": "%s",\n' "$(json_escape "$reason")"
             printf '      "machine": "%s",\n' "$(json_escape "$machine")"
-            printf '      "max_glibc": "%s"\n' "$(json_escape "$max_glibc")"
+            printf '      "max_glibc": "%s",\n' "$(json_escape "$max_glibc")"
+            printf '      "tuning": "%s"\n' "$(json_escape "$tuning")"
             printf '    }'
             index=$((index + 1))
         done
@@ -591,7 +613,7 @@ echo
 for core in "${deferred_cores[@]}"; do
     reason="$(spruce_deferred_reason "$core")"
     printf 'deferred %s %s\n' "$core" "$reason" >>"$REPORT_PATH"
-    report_add_row "$core" "deferred" "" "" "$reason" "" ""
+    report_add_row "$core" "deferred" "" "" "$reason" "" "" "not-built"
 done
 
 core_machine() {
@@ -670,11 +692,11 @@ stage_built_cores_since() {
         max_glibc="$(core_max_glibc "$core_path")"
         if ! verify_core "$core_path"; then
             printf 'failed %s verifier rejected %s\n' "$core" "$core_file" >>"$REPORT_PATH"
-            report_add_row "$core" "failed" "$core_file" "$info_file" "verifier rejected core" "$machine" "$max_glibc"
+            report_add_row "$core" "failed" "$core_file" "$info_file" "verifier rejected core" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}"
             return 1
         fi
         printf 'built %s %s\n' "$core" "$core_file" >>"$REPORT_PATH"
-        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc"
+        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}"
     done < <(find "$CORES_OUTPUT_DIR" -maxdepth 1 -type f -name '*_libretro.so' -newer "$stamp_file" | sort)
 
     if [[ "$built" -eq 1 ]]; then
@@ -682,7 +704,7 @@ stage_built_cores_since() {
     fi
 
     printf 'failed %s no output staged\n' "$core" >>"$REPORT_PATH"
-    report_add_row "$core" "failed" "" "" "no output staged" "" ""
+    report_add_row "$core" "failed" "" "" "no output staged" "" "" "${CURRENT_CORE_TUNING:-unknown}"
     return 1
 }
 
@@ -904,6 +926,18 @@ build_libretro_super_core() {
     )
 }
 
+core_tuning_status() {
+    local core="$1"
+    case "$core" in
+        mupen64plus_next|yabasanshiro)
+            printf 'upstream-a53-platform'
+            ;;
+        *)
+            printf 'generic-aarch64'
+            ;;
+    esac
+}
+
 build_one_core() {
     local core="$1"
     local stamp_file
@@ -911,6 +945,7 @@ build_one_core() {
 
     echo "=== Building $core for MLP1 ==="
     touch "$stamp_file"
+    CURRENT_CORE_TUNING="$(core_tuning_status "$core")"
 
     local build_status=1
     case "$core" in
@@ -951,7 +986,7 @@ build_one_core() {
 
     rm -f "$stamp_file"
     printf 'failed %s build failed\n' "$core" >>"$REPORT_PATH"
-    report_add_row "$core" "failed" "" "" "build failed" "" ""
+    report_add_row "$core" "failed" "" "" "build failed" "" "" "${CURRENT_CORE_TUNING:-unknown}"
     return 1
 }
 
