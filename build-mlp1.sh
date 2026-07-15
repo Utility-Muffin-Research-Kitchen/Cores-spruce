@@ -19,6 +19,8 @@ LIBRETRO_SUPER_SRC_DIR="${LIBRETRO_SUPER_SRC_DIR:-$CORES_WORKDIR/src/libretro-su
 EASYRPG_REF="${EASYRPG_REF:-}"
 FAKE08_URL="${FAKE08_URL:-https://github.com/jtothebell/fake-08.git}"
 FAKE08_REF="${FAKE08_REF:-}"
+GPSP_URL="${GPSP_URL:-https://github.com/libretro/gpsp.git}"
+GPSP_REF="${GPSP_REF:-69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/output/mlp1}"
 CORES_OUTPUT_DIR="${CORES_OUTPUT_DIR:-$OUTPUT_DIR/cores}"
 INFO_OUTPUT_DIR="${INFO_OUTPUT_DIR:-$OUTPUT_DIR/info}"
@@ -46,6 +48,7 @@ STOCK_PARITY_CORES=(
     mame2010
     mame
     mgba
+    gpsp
     mupen64plus_next
     pcsx_rearmed
     prosystem
@@ -53,6 +56,14 @@ STOCK_PARITY_CORES=(
     stella2014
     swanstation
     yabasanshiro
+)
+
+# These core ids have a local dedicated build lane. They are buildable when
+# requested through the Spruce inventory, but must not be treated as generic
+# libretro-super builds.
+MLP1_CUSTOM_SPRUCE_CORES=(
+    fake08
+    gpsp
 )
 
 SPRUCE_INSTALLED_CORES_FALLBACK=(
@@ -325,7 +336,8 @@ spruce_installed_cores() {
 spruce_buildable_cores() {
     local core
     while IFS= read -r core; do
-        if array_contains "$core" "${SPRUCE_LIBRETRO_SUPER_CORES[@]}"; then
+        if array_contains "$core" "${SPRUCE_LIBRETRO_SUPER_CORES[@]}" \
+            || array_contains "$core" "${MLP1_CUSTOM_SPRUCE_CORES[@]}"; then
             printf '%s\n' "$core"
         fi
     done < <(spruce_installed_cores)
@@ -333,7 +345,7 @@ spruce_buildable_cores() {
 
 spruce_deferred_reason() {
     case "$1" in
-        fake08|gpsp|km_duckswanstation_xtreme_amped|km_parallel_n64_xtreme_amped_turbo|libgametank)
+        km_duckswanstation_xtreme_amped|km_parallel_n64_xtreme_amped_turbo|libgametank)
             printf 'custom Cores-spruce workflow exists, MLP1 local builder not ported yet'
             ;;
         *)
@@ -345,7 +357,8 @@ spruce_deferred_reason() {
 spruce_deferred_cores() {
     local core
     while IFS= read -r core; do
-        if ! array_contains "$core" "${SPRUCE_LIBRETRO_SUPER_CORES[@]}"; then
+        if ! array_contains "$core" "${SPRUCE_LIBRETRO_SUPER_CORES[@]}" \
+            && ! array_contains "$core" "${MLP1_CUSTOM_SPRUCE_CORES[@]}"; then
             printf '%s\n' "$core"
         fi
     done < <(spruce_installed_cores)
@@ -395,6 +408,8 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
         -e IN_MLP1_CONTAINER=1
         -e LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-}"
         -e LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-}"
+        -e GPSP_URL="$GPSP_URL"
+        -e GPSP_REF="$GPSP_REF"
         -e CORES_WORKDIR=/workspace/workdir
         -e LIBRETRO_SUPER_SRC_DIR=/workspace/workdir/src/libretro-super
         -e OUTPUT_DIR=/workspace/output/mlp1
@@ -515,6 +530,8 @@ case "$build_mode" in
 esac
 
 "$REPO_ROOT/fetch-libretro-super.sh"
+LIBRETRO_SUPER_RESOLVED_URL="$(git -C "$LIBRETRO_SUPER_SRC_DIR" remote get-url origin)"
+LIBRETRO_SUPER_RESOLVED_COMMIT="$(git -C "$LIBRETRO_SUPER_SRC_DIR" rev-parse HEAD)"
 
 mkdir -p "$CORES_OUTPUT_DIR" "$INFO_OUTPUT_DIR" "$(dirname "$REPORT_PATH")"
 : >"$REPORT_PATH"
@@ -542,8 +559,11 @@ report_add_row() {
     local machine="${6:-}"
     local max_glibc="${7:-}"
     local tuning="${8:-}"
+    local source_url="${9:-}"
+    local source_commit="${10:-}"
+    local build_lane="${11:-}"
 
-    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning")
+    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning$REPORT_SEP$source_url$REPORT_SEP$source_commit$REPORT_SEP$build_lane")
 }
 
 write_json_report() {
@@ -565,6 +585,8 @@ write_json_report() {
         printf '  "cflags": "%s",\n' "$(json_escape "$UMRK_MLP1_PROFILE_CFLAGS")"
         printf '  "cxxflags": "%s",\n' "$(json_escape "$UMRK_MLP1_PROFILE_CXXFLAGS")"
         printf '  "ldflags": "%s",\n' "$(json_escape "$UMRK_MLP1_PROFILE_LDFLAGS")"
+        printf '  "libretro_super_url": "%s",\n' "$(json_escape "$LIBRETRO_SUPER_RESOLVED_URL")"
+        printf '  "libretro_super_commit": "%s",\n' "$(json_escape "$LIBRETRO_SUPER_RESOLVED_COMMIT")"
         printf '  "status": "%s",\n' "$status"
         printf '  "requested_count": %d,\n' "${#requested_cores[@]}"
         printf '  "failed_count": %d,\n' "$failed_count"
@@ -576,7 +598,7 @@ write_json_report() {
         printf '  "cores": [\n'
         local row index=0
         for row in "${REPORT_ROWS[@]}"; do
-            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning <<<"$row"
+            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane <<<"$row"
             if [[ "$index" -gt 0 ]]; then
                 printf ',\n'
             fi
@@ -588,7 +610,10 @@ write_json_report() {
             printf '      "reason": "%s",\n' "$(json_escape "$reason")"
             printf '      "machine": "%s",\n' "$(json_escape "$machine")"
             printf '      "max_glibc": "%s",\n' "$(json_escape "$max_glibc")"
-            printf '      "tuning": "%s"\n' "$(json_escape "$tuning")"
+            printf '      "tuning": "%s",\n' "$(json_escape "$tuning")"
+            printf '      "source_url": "%s",\n' "$(json_escape "$source_url")"
+            printf '      "source_commit": "%s",\n' "$(json_escape "$source_commit")"
+            printf '      "build_lane": "%s"\n' "$(json_escape "$build_lane")"
             printf '    }'
             index=$((index + 1))
         done
@@ -685,18 +710,20 @@ stage_built_cores_since() {
         core_file="$(basename "$core_path")"
         info_file="${core_file%.so}.info"
         if ! copy_core_info "$info_file"; then
-            info_file=""
+            printf 'failed %s matching info file missing: %s\n' "$core" "$info_file" >>"$REPORT_PATH"
+            report_add_row "$core" "failed" "$core_file" "$info_file" "matching info file missing" "" "" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
+            return 1
         fi
         local machine max_glibc
         machine="$(core_machine "$core_path")"
         max_glibc="$(core_max_glibc "$core_path")"
         if ! verify_core "$core_path"; then
             printf 'failed %s verifier rejected %s\n' "$core" "$core_file" >>"$REPORT_PATH"
-            report_add_row "$core" "failed" "$core_file" "$info_file" "verifier rejected core" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}"
+            report_add_row "$core" "failed" "$core_file" "$info_file" "verifier rejected core" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
             return 1
         fi
         printf 'built %s %s\n' "$core" "$core_file" >>"$REPORT_PATH"
-        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}"
+        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
     done < <(find "$CORES_OUTPUT_DIR" -maxdepth 1 -type f -name '*_libretro.so' -newer "$stamp_file" | sort)
 
     if [[ "$built" -eq 1 ]]; then
@@ -704,7 +731,7 @@ stage_built_cores_since() {
     fi
 
     printf 'failed %s no output staged\n' "$core" >>"$REPORT_PATH"
-    report_add_row "$core" "failed" "" "" "no output staged" "" "" "${CURRENT_CORE_TUNING:-unknown}"
+    report_add_row "$core" "failed" "" "" "no output staged" "" "" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
     return 1
 }
 
@@ -727,6 +754,51 @@ build_fake08_core() {
         CXX="${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}-g++" \
         -j"$JOBS" || return 1
     cp -f "$src_dir/platform/libretro/fake08_libretro.so" "$CORES_OUTPUT_DIR/fake08_libretro.so" || return 1
+}
+
+build_gpsp_core() {
+    local src_dir="$CORES_WORKDIR/src/gpsp"
+    local resolved_commit
+
+    if [[ ! "$GPSP_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        echo "GPSP_REF must be a full 40-character commit SHA: $GPSP_REF" >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$src_dir")"
+    if [[ ! -d "$src_dir/.git" ]]; then
+        rm -rf "$src_dir"
+        git clone "$GPSP_URL" "$src_dir" || return 1
+    fi
+
+    git -C "$src_dir" remote set-url origin "$GPSP_URL" || return 1
+    git -C "$src_dir" fetch --tags --prune origin || return 1
+    if ! git -C "$src_dir" cat-file -e "${GPSP_REF}^{commit}" 2>/dev/null; then
+        echo "gpSP source pin is unavailable: $GPSP_REF" >&2
+        return 1
+    fi
+    git -C "$src_dir" -c advice.detachedHead=false checkout --detach "$GPSP_REF" || return 1
+    resolved_commit="$(git -C "$src_dir" rev-parse HEAD)"
+    if [[ "$resolved_commit" != "$GPSP_REF" ]]; then
+        echo "gpSP resolved commit differs from requested pin: $resolved_commit" >&2
+        return 1
+    fi
+    git -C "$src_dir" clean -ffdx || return 1
+
+    (
+        cd "$src_dir" || exit 1
+        make clean || exit 1
+        make -j"$JOBS" platform=arm64 \
+            CC="$(cross_cc)" \
+            CXX="$(cross_cxx)" \
+            AR="$(cross_ar)" \
+            RANLIB="$(cross_ranlib)" || exit 1
+        cp -f gpsp_libretro.so "$CORES_OUTPUT_DIR/gpsp_libretro.so" || exit 1
+    ) || return 1
+
+    CURRENT_CORE_SOURCE_URL="$GPSP_URL"
+    CURRENT_CORE_SOURCE_COMMIT="$resolved_commit"
+    CURRENT_CORE_BUILD_LANE="custom-arm64"
 }
 
 build_easyrpg_core() {
@@ -932,6 +1004,9 @@ core_tuning_status() {
         mupen64plus_next|yabasanshiro)
             printf 'upstream-a53-platform'
             ;;
+        gpsp)
+            printf 'arm64-dynarec'
+            ;;
         *)
             printf 'generic-aarch64'
             ;;
@@ -946,6 +1021,9 @@ build_one_core() {
     echo "=== Building $core for MLP1 ==="
     touch "$stamp_file"
     CURRENT_CORE_TUNING="$(core_tuning_status "$core")"
+    CURRENT_CORE_SOURCE_URL=""
+    CURRENT_CORE_SOURCE_COMMIT=""
+    CURRENT_CORE_BUILD_LANE="generic-libretro-super"
 
     local build_status=1
     case "$core" in
@@ -954,6 +1032,9 @@ build_one_core() {
             ;;
         fake08)
             build_fake08_core && build_status=0
+            ;;
+        gpsp)
+            build_gpsp_core && build_status=0
             ;;
         flycast)
             build_flycast_core && build_status=0
@@ -986,7 +1067,7 @@ build_one_core() {
 
     rm -f "$stamp_file"
     printf 'failed %s build failed\n' "$core" >>"$REPORT_PATH"
-    report_add_row "$core" "failed" "" "" "build failed" "" "" "${CURRENT_CORE_TUNING:-unknown}"
+    report_add_row "$core" "failed" "" "" "build failed" "" "" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
     return 1
 }
 

@@ -85,7 +85,7 @@ Quick start:
 
 ```sh
 ./build-mlp1.sh                  # genesis_plus_gx vertical slice
-./build-mlp1.sh --stock-parity   # all 26 stock-parity cores
+./build-mlp1.sh --stock-parity   # all 27 stock-parity cores
 ./build-mlp1.sh --spruce-all     # build generic Spruce cores, report deferred
 ```
 
@@ -100,9 +100,10 @@ Useful commands:
 ```
 
 The Spruce lane reads installed core names from `SPRUCE_OS_DIR` or an adjacent
-`../spruceOS` checkout when available. `--spruce-buildable` only builds the generic
-`libretro-super` subset; `--spruce-all` builds that subset and records the
-remaining Spruce cores as deferred in the report.
+`../spruceOS` checkout when available. `--spruce-buildable` builds the generic
+`libretro-super` subset plus the local dedicated lanes (`fake08` and `gpsp`);
+`--spruce-all` builds that set and records the remaining Spruce cores as
+deferred in the report.
 
 Custom Spruce workflows still need MLP1 ports before they can join the generic
 batch. Use `--list-spruce-deferred` for the current per-core reason list.
@@ -115,20 +116,18 @@ Outputs:
 - JSON build report: `output/mlp1/build-report.json`
 
 `--stock-parity` includes a few repo-owned special builders, including
-`easyrpg`, `fake08`, `flycast`, `mame`, `mupen64plus_next`, `swanstation`, and
-`yabasanshiro`, in addition to generic `libretro-super` cores.
+`easyrpg`, `fake08`, `flycast`, `gpsp`, `mame`, `mupen64plus_next`,
+`swanstation`, and `yabasanshiro`, in addition to generic `libretro-super`
+cores. The gpSP lane checks out its pinned upstream commit and builds with
+`platform=arm64`, enabling the core's ARM64 dynamic recompiler.
 
-`--spruce-all` is intentionally stricter: it builds the generic
-`libretro-super` subset and records non-generic Spruce cores as deferred. Use
-the script for the current deferred list instead of trusting a static README
-copy:
+`--spruce-all` builds the generic `libretro-super` subset and the local
+dedicated lanes, then records unported Spruce cores as deferred. Use the script
+for the current deferred list instead of trusting a static README copy:
 
 ```sh
 ./build-mlp1.sh --list-spruce-deferred
 ```
-
-If a core appears in that deferred report but also has a stock-parity special
-builder, the deferred status applies only to the generic Spruce batch.
 
 The text and JSON reports include `built`, `failed`, and `deferred` rows, plus
 the staged core filename, info filename, ELF machine, and maximum GLIBC version
