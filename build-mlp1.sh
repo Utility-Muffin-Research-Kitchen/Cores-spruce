@@ -26,6 +26,8 @@ CORES_OUTPUT_DIR="${CORES_OUTPUT_DIR:-$OUTPUT_DIR/cores}"
 INFO_OUTPUT_DIR="${INFO_OUTPUT_DIR:-$OUTPUT_DIR/info}"
 REPORT_PATH="${REPORT_PATH:-$OUTPUT_DIR/build-report.txt}"
 REPORT_JSON_PATH="${REPORT_JSON_PATH:-${REPORT_PATH%.txt}.json}"
+CORE_INFO_PROBE_PATH="${CORE_INFO_PROBE_PATH:-$OUTPUT_DIR/tools/mlp1-core-info-probe}"
+CORE_INFO_PROBE_LIBRARY_DIR="${CORE_INFO_PROBE_LIBRARY_DIR:-$OUTPUT_DIR/tools/lib}"
 JOBS="${JOBS:-}"
 MLP1_BUILD_PROFILE="${MLP1_BUILD_PROFILE:-release}"
 
@@ -288,6 +290,8 @@ Outputs:
   $INFO_OUTPUT_DIR
   $REPORT_PATH
   $REPORT_JSON_PATH
+  $CORE_INFO_PROBE_PATH
+  $CORE_INFO_PROBE_LIBRARY_DIR
 EOF
 }
 
@@ -417,6 +421,8 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
         -e INFO_OUTPUT_DIR=/workspace/output/mlp1/info
         -e REPORT_PATH=/workspace/output/mlp1/build-report.txt
         -e REPORT_JSON_PATH=/workspace/output/mlp1/build-report.json
+        -e CORE_INFO_PROBE_PATH=/workspace/output/mlp1/tools/mlp1-core-info-probe
+        -e CORE_INFO_PROBE_LIBRARY_DIR=/workspace/output/mlp1/tools/lib
         -e JOBS="${JOBS:-}"
         -e MLP1_BUILD_PROFILE="$MLP1_BUILD_PROFILE"
         -v "$REPO_ROOT":/workspace
@@ -562,8 +568,10 @@ report_add_row() {
     local source_url="${9:-}"
     local source_commit="${10:-}"
     local build_lane="${11:-}"
+    local sha256="${12:-}"
+    local library_name="${13:-}"
 
-    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning$REPORT_SEP$source_url$REPORT_SEP$source_commit$REPORT_SEP$build_lane")
+    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning$REPORT_SEP$source_url$REPORT_SEP$source_commit$REPORT_SEP$build_lane$REPORT_SEP$sha256$REPORT_SEP$library_name")
 }
 
 write_json_report() {
@@ -574,9 +582,22 @@ write_json_report() {
         status="failed"
     fi
 
+    local built_count=0
+    local row row_status
+    for row in "${REPORT_ROWS[@]}"; do
+        IFS="$REPORT_SEP" read -r _ row_status _ <<<"$row"
+        if [[ "$row_status" == "built" ]]; then
+            built_count=$((built_count + 1))
+        fi
+    done
+    local library_name_status="not-applicable"
+    if [[ "$built_count" -gt 0 ]]; then
+        library_name_status="pending"
+    fi
+
     {
         printf '{\n'
-        printf '  "version": 1,\n'
+        printf '  "version": 2,\n'
         printf '  "platform": "mlp1",\n'
         printf '  "build_mode": "%s",\n' "$(json_escape "$build_mode")"
         printf '  "target_soc": "%s",\n' "$(json_escape "$UMRK_MLP1_TARGET_SOC")"
@@ -589,16 +610,19 @@ write_json_report() {
         printf '  "libretro_super_commit": "%s",\n' "$(json_escape "$LIBRETRO_SUPER_RESOLVED_COMMIT")"
         printf '  "status": "%s",\n' "$status"
         printf '  "requested_count": %d,\n' "${#requested_cores[@]}"
+        printf '  "built_count": %d,\n' "$built_count"
         printf '  "failed_count": %d,\n' "$failed_count"
         printf '  "deferred_count": %d,\n' "$deferred_count"
+        printf '  "library_name_status": "%s",\n' "$library_name_status"
+        printf '  "library_name_count": 0,\n'
         printf '  "output_dir": "%s",\n' "$(json_escape "$OUTPUT_DIR")"
         printf '  "cores_output_dir": "%s",\n' "$(json_escape "$CORES_OUTPUT_DIR")"
         printf '  "info_output_dir": "%s",\n' "$(json_escape "$INFO_OUTPUT_DIR")"
         printf '  "text_report": "%s",\n' "$(json_escape "$REPORT_PATH")"
         printf '  "cores": [\n'
-        local row index=0
+        local index=0
         for row in "${REPORT_ROWS[@]}"; do
-            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane <<<"$row"
+            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane sha256 library_name <<<"$row"
             if [[ "$index" -gt 0 ]]; then
                 printf ',\n'
             fi
@@ -613,7 +637,9 @@ write_json_report() {
             printf '      "tuning": "%s",\n' "$(json_escape "$tuning")"
             printf '      "source_url": "%s",\n' "$(json_escape "$source_url")"
             printf '      "source_commit": "%s",\n' "$(json_escape "$source_commit")"
-            printf '      "build_lane": "%s"\n' "$(json_escape "$build_lane")"
+            printf '      "build_lane": "%s",\n' "$(json_escape "$build_lane")"
+            printf '      "sha256": "%s",\n' "$(json_escape "$sha256")"
+            printf '      "library_name": "%s"\n' "$(json_escape "$library_name")"
             printf '    }'
             index=$((index + 1))
         done
@@ -627,6 +653,7 @@ echo "MLP1 core build"
 echo "libretro-super: $LIBRETRO_SUPER_SRC_DIR"
 echo "output:          $OUTPUT_DIR"
 echo "json report:     $REPORT_JSON_PATH"
+echo "core info probe: $CORE_INFO_PROBE_PATH"
 echo "jobs:            $JOBS"
 if [[ "$build_mode" == spruce-* ]]; then
     echo "spruceOS:        $SPRUCE_OS_DIR"
@@ -657,6 +684,15 @@ core_max_glibc() {
         }' | sort -V | tail -n 1
 }
 
+core_sha256() {
+    local core_path="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$core_path" | awk '{print $1}'
+    else
+        shasum -a 256 "$core_path" | awk '{print $1}'
+    fi
+}
+
 verify_core() {
     local core_path="$1"
     local machine max_glibc newest
@@ -676,6 +712,52 @@ verify_core() {
             return 1
         fi
     fi
+}
+
+build_core_info_probe() {
+    local cc="${CC:-${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}-gcc}"
+    local temp_path="$CORE_INFO_PROBE_PATH.tmp.$$"
+    local -a profile_cflags=()
+    local -a profile_ldflags=()
+
+    read -r -a profile_cflags <<<"${UMRK_MLP1_PROFILE_CFLAGS:-}"
+    read -r -a profile_ldflags <<<"${UMRK_MLP1_PROFILE_LDFLAGS:-}"
+    mkdir -p "$(dirname "$CORE_INFO_PROBE_PATH")"
+    rm -f "$temp_path"
+    if ! "$cc" -std=c11 -Wall -Wextra -Werror \
+        "${profile_cflags[@]}" \
+        "$REPO_ROOT/tools/mlp1-core-info-probe.c" \
+        "${profile_ldflags[@]}" -ldl -o "$temp_path"; then
+        rm -f "$temp_path"
+        return 1
+    fi
+    if ! verify_core "$temp_path"; then
+        rm -f "$temp_path"
+        return 1
+    fi
+    mv -f "$temp_path" "$CORE_INFO_PROBE_PATH"
+}
+
+stage_core_info_probe_libraries() {
+    local -a core_paths=()
+    local row row_status core_file
+
+    for row in "${REPORT_ROWS[@]}"; do
+        IFS="$REPORT_SEP" read -r _ row_status core_file _ <<<"$row"
+        if [[ "$row_status" == "built" ]]; then
+            core_paths+=("$CORES_OUTPUT_DIR/$core_file")
+        fi
+    done
+
+    if [[ ${#core_paths[@]} -eq 0 ]]; then
+        mkdir -p "$CORE_INFO_PROBE_LIBRARY_DIR"
+        find "$CORE_INFO_PROBE_LIBRARY_DIR" -mindepth 1 -maxdepth 1 \
+            \( -type f -o -type l \) -delete
+        return 0
+    fi
+
+    "$REPO_ROOT/scripts/stage-mlp1-probe-libs.sh" \
+        "$CORE_INFO_PROBE_LIBRARY_DIR" "${core_paths[@]}"
 }
 
 copy_core_info() {
@@ -714,7 +796,7 @@ stage_built_cores_since() {
             report_add_row "$core" "failed" "$core_file" "$info_file" "matching info file missing" "" "" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
             return 1
         fi
-        local machine max_glibc
+        local machine max_glibc sha256
         machine="$(core_machine "$core_path")"
         max_glibc="$(core_max_glibc "$core_path")"
         if ! verify_core "$core_path"; then
@@ -722,8 +804,9 @@ stage_built_cores_since() {
             report_add_row "$core" "failed" "$core_file" "$info_file" "verifier rejected core" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
             return 1
         fi
+        sha256="$(core_sha256 "$core_path")"
         printf 'built %s %s\n' "$core" "$core_file" >>"$REPORT_PATH"
-        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
+        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}" "$sha256" ""
     done < <(find "$CORES_OUTPUT_DIR" -maxdepth 1 -type f -name '*_libretro.so' -newer "$stamp_file" | sort)
 
     if [[ "$built" -eq 1 ]]; then
@@ -1072,11 +1155,20 @@ build_one_core() {
 }
 
 declare -a failed_cores=()
+if ! build_core_info_probe; then
+    echo "Failed to build the MLP1 core info probe." >&2
+    exit 1
+fi
 for core in "${requested_cores[@]}"; do
     if ! build_one_core "$core"; then
         failed_cores+=("$core")
     fi
 done
+
+if ! stage_core_info_probe_libraries; then
+    echo "Failed to stage the MLP1 core probe dependency closure." >&2
+    exit 1
+fi
 
 echo
 echo "=== MLP1 core build report ==="

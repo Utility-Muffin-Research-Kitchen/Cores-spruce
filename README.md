@@ -97,6 +97,7 @@ Useful commands:
 ./build-mlp1.sh --list-spruce-buildable
 ./build-mlp1.sh --list-spruce-deferred
 ./build-mlp1.sh genesis_plus_gx mgba snes9x
+./probe-mlp1-cores-adb.sh        # record exact runtime core names
 ```
 
 The Spruce lane reads installed core names from `SPRUCE_OS_DIR` or an adjacent
@@ -114,6 +115,8 @@ Outputs:
 - info files: `output/mlp1/info/*.info`
 - build report: `output/mlp1/build-report.txt`
 - JSON build report: `output/mlp1/build-report.json`
+- AArch64 core-info probe: `output/mlp1/tools/mlp1-core-info-probe`
+- Probe-only dependency closure: `output/mlp1/tools/lib/`
 
 `--stock-parity` includes a few repo-owned special builders, including
 `easyrpg`, `fake08`, `flycast`, `gpsp`, `mame`, `mupen64plus_next`,
@@ -131,4 +134,42 @@ for the current deferred list instead of trusting a static README copy:
 
 The text and JSON reports include `built`, `failed`, and `deferred` rows, plus
 the staged core filename, info filename, ELF machine, and maximum GLIBC version
-where available.
+where available. JSON report version 2 also binds every built row to the
+staged binary with `sha256` and reserves `library_name` for the exact,
+case-sensitive value returned by the core's `retro_get_system_info()`.
+
+An MLP1 build leaves `library_name_status` as `pending`. With the target device
+connected, complete the report before packaging it:
+
+```sh
+ADB_SERIAL=optional-device-serial ./probe-mlp1-cores-adb.sh
+python3 scripts/mlp1-core-report.py verify \
+    --report output/mlp1/build-report.json \
+    --cores-dir output/mlp1/cores
+```
+
+The runner validates every report checksum, pushes the probe, its isolated
+dependency closure, and one core at a time into a private directory under
+device `/tmp`, and removes that directory on success or failure. The helper
+libraries exist only to let `dlopen()` resolve build-time dependencies during
+the probe; they are not part of the RetroArch package. The runner updates the
+report atomically only after all built rows succeed, setting
+`library_name_status` to `complete` and
+`library_name_count` to the number of built cores. It does not inspect or alter
+the device SD card, saves, or states. Without `ADB_SERIAL`, it uses the first
+online device from `adb devices`.
+
+The manifest, apply, and verify commands validate the complete report summary:
+top-level status and counts must agree with the row statuses, core IDs must be
+unique, and a report with failed or deferred rows is not probeable. This does
+not require a full stock-parity build; a targeted build is valid when every
+requested core was built. The apply command accepts the build's internally
+consistent `pending` report and changes it to `complete`; `verify` additionally
+requires that complete phase, a non-empty library name for every built row, and
+an unchanged checksum for every staged core.
+
+Host checks are available without an MLP1 build or device:
+
+```sh
+make check
+```
