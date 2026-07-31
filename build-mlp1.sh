@@ -53,6 +53,7 @@ STOCK_PARITY_CORES=(
     gpsp
     mupen64plus_next
     pcsx_rearmed
+    picodrive
     prosystem
     snes9x
     stella2014
