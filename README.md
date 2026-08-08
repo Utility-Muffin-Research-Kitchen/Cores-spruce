@@ -102,9 +102,9 @@ Useful commands:
 
 The Spruce lane reads installed core names from `SPRUCE_OS_DIR` or an adjacent
 `../spruceOS` checkout when available. `--spruce-buildable` builds the generic
-`libretro-super` subset plus the local dedicated lanes (`fake08` and `gpsp`);
-`--spruce-all` builds that set and records the remaining Spruce cores as
-deferred in the report.
+`libretro-super` subset plus the local dedicated lanes (`fake08`, `gpsp`, and
+`mgba`); `--spruce-all` builds that set and records the remaining Spruce cores
+as deferred in the report.
 
 Custom Spruce workflows still need MLP1 ports before they can join the generic
 batch. Use `--list-spruce-deferred` for the current per-core reason list.
@@ -119,10 +119,29 @@ Outputs:
 - Probe-only dependency closure: `output/mlp1/tools/lib/`
 
 `--stock-parity` includes a few repo-owned special builders, including
-`easyrpg`, `fake08`, `flycast`, `gpsp`, `mame`, `mupen64plus_next`,
+`easyrpg`, `fake08`, `flycast`, `gpsp`, `mame`, `mgba`, `mupen64plus_next`,
 `swanstation`, and `yabasanshiro`, in addition to generic `libretro-super`
 cores. The gpSP lane checks out its pinned upstream commit and builds with
 `platform=arm64`, enabling the core's ARM64 dynamic recompiler.
+
+The mGBA lane builds from its own pinned checkout with CMake. Upstream deleted
+`Makefile.libretro`, so the `libretro-super` rule for this core no longer works;
+because that rule's failure is not fatal, the generic lane used to re-copy the
+previous build's `.so` and report it as `built`. Both source pins are settable:
+
+| Variable | Default |
+| --- | --- |
+| `GPSP_URL` / `GPSP_REF` | `libretro/gpsp` @ `69e86ebe8` |
+| `MGBA_URL` / `MGBA_REF` | `libretro/mgba` @ `e31759b24` |
+
+A `*_REF` must be a full 40-character commit SHA; the build fails rather than
+falling back to a branch if the pin cannot be resolved. Both lanes record
+`source_url`, `source_commit`, and `build_lane` in the JSON report.
+
+Every lane's previously staged core is removed before its build runs, so a lane
+that produces nothing is reported as `failed`, never as `built`. If a build
+stages a binary byte-identical to the one it replaced, the text report notes it
+on an `unchanged` line.
 
 `--spruce-all` builds the generic `libretro-super` subset and the local
 dedicated lanes, then records unported Spruce cores as deferred. Use the script

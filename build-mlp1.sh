@@ -21,6 +21,8 @@ FAKE08_URL="${FAKE08_URL:-https://github.com/jtothebell/fake-08.git}"
 FAKE08_REF="${FAKE08_REF:-}"
 GPSP_URL="${GPSP_URL:-https://github.com/libretro/gpsp.git}"
 GPSP_REF="${GPSP_REF:-69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4}"
+MGBA_URL="${MGBA_URL:-https://github.com/libretro/mgba.git}"
+MGBA_REF="${MGBA_REF:-e31759b24e7a4e3899285ff720d7b573ac328ae7}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/output/mlp1}"
 CORES_OUTPUT_DIR="${CORES_OUTPUT_DIR:-$OUTPUT_DIR/cores}"
 INFO_OUTPUT_DIR="${INFO_OUTPUT_DIR:-$OUTPUT_DIR/info}"
@@ -67,6 +69,7 @@ STOCK_PARITY_CORES=(
 MLP1_CUSTOM_SPRUCE_CORES=(
     fake08
     gpsp
+    mgba
 )
 
 SPRUCE_INSTALLED_CORES_FALLBACK=(
@@ -225,7 +228,6 @@ SPRUCE_LIBRETRO_SUPER_CORES=(
     mednafen_supergrafx
     mednafen_vb
     mednafen_wswan
-    mgba
     mu
     mupen64plus_next
     neocd
@@ -415,6 +417,8 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
         -e LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-}"
         -e GPSP_URL="$GPSP_URL"
         -e GPSP_REF="$GPSP_REF"
+        -e MGBA_URL="$MGBA_URL"
+        -e MGBA_REF="$MGBA_REF"
         -e CORES_WORKDIR=/workspace/workdir
         -e LIBRETRO_SUPER_SRC_DIR=/workspace/workdir/src/libretro-super
         -e OUTPUT_DIR=/workspace/output/mlp1
@@ -806,6 +810,14 @@ stage_built_cores_since() {
             return 1
         fi
         sha256="$(core_sha256 "$core_path")"
+        if [[ "$core_file" == "${core}_libretro.so" \
+            && -n "${CURRENT_CORE_PREVIOUS_SHA256:-}" \
+            && "$sha256" == "$CURRENT_CORE_PREVIOUS_SHA256" ]]; then
+            # Legitimate for a reproducible rebuild of unchanged source, but
+            # also what a lane that recycles a stale binary looks like.
+            printf 'unchanged %s %s %s\n' "$core" "$core_file" "$sha256" >>"$REPORT_PATH"
+            echo "note: $core staged a binary identical to the previous build: $sha256" >&2
+        fi
         printf 'built %s %s\n' "$core" "$core_file" >>"$REPORT_PATH"
         report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}" "$sha256" ""
     done < <(find "$CORES_OUTPUT_DIR" -maxdepth 1 -type f -name '*_libretro.so' -newer "$stamp_file" | sort)
@@ -882,7 +894,69 @@ build_gpsp_core() {
 
     CURRENT_CORE_SOURCE_URL="$GPSP_URL"
     CURRENT_CORE_SOURCE_COMMIT="$resolved_commit"
-    CURRENT_CORE_BUILD_LANE="custom-arm64"
+}
+
+# mGBA deleted Makefile.libretro in upstream 89404771c, so libretro-super's
+# make-based rule can no longer build it. Build it through CMake, from a
+# dedicated checkout that the macOS lane's patches/macos/mgba.patch never
+# touches.
+build_mgba_core() {
+    local src_dir="$CORES_WORKDIR/src/mgba"
+    local build_dir="$src_dir/build"
+    local resolved_commit
+    local -a cmake_args=()
+
+    if [[ ! "$MGBA_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        echo "MGBA_REF must be a full 40-character commit SHA: $MGBA_REF" >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$src_dir")"
+    if [[ ! -d "$src_dir/.git" ]]; then
+        rm -rf "$src_dir"
+        git clone "$MGBA_URL" "$src_dir" || return 1
+    fi
+
+    git -C "$src_dir" remote set-url origin "$MGBA_URL" || return 1
+    git -C "$src_dir" fetch --tags --prune origin || return 1
+    if ! git -C "$src_dir" cat-file -e "${MGBA_REF}^{commit}" 2>/dev/null; then
+        echo "mGBA source pin is unavailable: $MGBA_REF" >&2
+        return 1
+    fi
+    git -C "$src_dir" -c advice.detachedHead=false checkout --detach "$MGBA_REF" || return 1
+    resolved_commit="$(git -C "$src_dir" rev-parse HEAD)"
+    if [[ "$resolved_commit" != "$MGBA_REF" ]]; then
+        echo "mGBA resolved commit differs from requested pin: $resolved_commit" >&2
+        return 1
+    fi
+    # mGBA derives its reported version from git describe, so a tracked
+    # modification would ship a core that calls itself "-dirty".
+    git -C "$src_dir" reset --hard "$MGBA_REF" || return 1
+    git -C "$src_dir" clean -ffdx || return 1
+
+    cmake_args=(
+        -S "$src_dir"
+        -B "$build_dir"
+        -DCMAKE_BUILD_TYPE=Release
+        -DBUILD_LIBRETRO=ON
+        -DBUILD_QT=OFF
+        -DBUILD_SDL=OFF
+        -DBUILD_ROM_TEST=OFF
+        -DBUILD_SUITE=OFF
+        -DBUILD_PYTHON=OFF
+        -DUSE_DISCORD_RPC=OFF
+    )
+    if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
+        cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE")
+    fi
+
+    rm -rf "$build_dir"
+    CC="$(cross_cc)" CXX="$(cross_cxx)" cmake "${cmake_args[@]}" || return 1
+    cmake --build "$build_dir" -j"$JOBS" || return 1
+    cp -f "$build_dir/mgba_libretro.so" "$CORES_OUTPUT_DIR/mgba_libretro.so" || return 1
+
+    CURRENT_CORE_SOURCE_URL="$MGBA_URL"
+    CURRENT_CORE_SOURCE_COMMIT="$resolved_commit"
 }
 
 build_easyrpg_core() {
@@ -949,6 +1023,14 @@ make_tool() {
         printf 'gmake'
     else
         printf 'make'
+    fi
+}
+
+purge_stale_core_artifacts() {
+    local src_dir="$1"
+
+    if [[ -d "$src_dir" ]]; then
+        find "$src_dir" -type f -name '*_libretro.so' -delete
     fi
 }
 
@@ -1067,19 +1149,43 @@ build_yabasanshiro_core() {
 build_libretro_super_core() {
     local core="$1"
 
+    fetch_libretro_super_core "$core" unix || return 1
+
+    # libretro-super's die() has its exit commented out, so a failed compile
+    # does not stop the run: libretro-build.sh goes on to copy whatever
+    # *_libretro.so the checkout still holds from a previous build and counts
+    # it as "successfully processed". Drop those first so a broken build
+    # produces no output instead of silently re-shipping the last good one.
+    purge_stale_core_artifacts "$LIBRETRO_SUPER_SRC_DIR/libretro-$core"
+
     (
         cd "$LIBRETRO_SUPER_SRC_DIR" || exit 1
         platform=unix ARCH=aarch64 \
-            HOST_CC="${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}" \
-            RARCH_DIST_DIR="$CORES_OUTPUT_DIR" \
-            JOBS="$JOBS" \
-            ./libretro-fetch.sh "$core" || exit 1
-        platform=unix ARCH=aarch64 \
-            HOST_CC="${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}" \
+            HOST_CC="$(cross_prefix)" \
             RARCH_DIST_DIR="$CORES_OUTPUT_DIR" \
             JOBS="$JOBS" \
             ./libretro-build.sh "$core" || exit 1
     )
+}
+
+# Set before dispatch so a lane that fails early still reports where it ran.
+# Everything not listed here fetches and builds through libretro-super.
+core_build_lane() {
+    local core="$1"
+    case "$core" in
+        fake08)
+            printf 'custom-makefile'
+            ;;
+        gpsp)
+            printf 'custom-arm64'
+            ;;
+        mgba)
+            printf 'custom-cmake'
+            ;;
+        *)
+            printf 'generic-libretro-super'
+            ;;
+    esac
 }
 
 core_tuning_status() {
@@ -1100,14 +1206,25 @@ core_tuning_status() {
 build_one_core() {
     local core="$1"
     local stamp_file
+    local staged_core="$CORES_OUTPUT_DIR/${core}_libretro.so"
     stamp_file="$(mktemp)"
 
     echo "=== Building $core for MLP1 ==="
+
+    # Never let a previous run's binary stand in for this one. With the staged
+    # artifact gone, a lane that fails to produce a core reports "no output
+    # staged" instead of inheriting whatever was already there.
+    CURRENT_CORE_PREVIOUS_SHA256=""
+    if [[ -f "$staged_core" ]]; then
+        CURRENT_CORE_PREVIOUS_SHA256="$(core_sha256 "$staged_core")"
+        rm -f "$staged_core"
+    fi
+
     touch "$stamp_file"
     CURRENT_CORE_TUNING="$(core_tuning_status "$core")"
     CURRENT_CORE_SOURCE_URL=""
     CURRENT_CORE_SOURCE_COMMIT=""
-    CURRENT_CORE_BUILD_LANE="generic-libretro-super"
+    CURRENT_CORE_BUILD_LANE="$(core_build_lane "$core")"
 
     local build_status=1
     case "$core" in
@@ -1125,6 +1242,9 @@ build_one_core() {
             ;;
         mame)
             build_mame_core && build_status=0
+            ;;
+        mgba)
+            build_mgba_core && build_status=0
             ;;
         mupen64plus_next)
             build_mupen64plus_next_core && build_status=0
