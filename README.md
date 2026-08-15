@@ -138,6 +138,15 @@ A `*_REF` must be a full 40-character commit SHA; the build fails rather than
 falling back to a branch if the pin cannot be resolved. Both lanes record
 `source_url`, `source_commit`, and `build_lane` in the JSON report.
 
+The report also records the identity of the builder that produced it:
+`builder_script_sha256` (the sha256 of `build-mlp1.sh`) and `builder_commit`
+(this repo's HEAD, suffixed `-dirty` for an unclean tree, and empty when git is
+unavailable). Leaf's release gate compares the recorded script hash against the
+current file and refuses to cut a release when they differ: artifacts already
+sitting in `output/` predate the current builder, so its lanes, pins, and flags
+are not reflected in them. Only `builder_script_sha256` is gated;
+`builder_commit` is diagnostic.
+
 Every lane's previously staged core is removed before its build runs, so a lane
 that produces nothing is reported as `failed`, never as `built`. If a build
 stages a binary byte-identical to the one it replaced, the text report notes it

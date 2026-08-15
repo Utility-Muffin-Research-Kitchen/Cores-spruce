@@ -613,6 +613,8 @@ write_json_report() {
         printf '  "ldflags": "%s",\n' "$(json_escape "$UMRK_MLP1_PROFILE_LDFLAGS")"
         printf '  "libretro_super_url": "%s",\n' "$(json_escape "$LIBRETRO_SUPER_RESOLVED_URL")"
         printf '  "libretro_super_commit": "%s",\n' "$(json_escape "$LIBRETRO_SUPER_RESOLVED_COMMIT")"
+        printf '  "builder_script_sha256": "%s",\n' "$(json_escape "$(builder_script_sha256)")"
+        printf '  "builder_commit": "%s",\n' "$(json_escape "$(builder_commit)")"
         printf '  "status": "%s",\n' "$status"
         printf '  "requested_count": %d,\n' "${#requested_cores[@]}"
         printf '  "built_count": %d,\n' "$built_count"
@@ -687,6 +689,37 @@ core_max_glibc() {
             v = substr($0, RSTART + 6, RLENGTH - 6);
             print v;
         }' | sort -V | tail -n 1
+}
+
+# Identity of the builder that produced a report. A release gate compares the
+# recorded script hash against the current file: if they differ, the artifacts
+# in output/ predate the current build-mlp1.sh and cannot be assumed to reflect
+# its lanes, pins, or flags. This is what makes a stale artifact detectable
+# without the gate needing to understand individual cores.
+builder_script_sha256() {
+    local script="$REPO_ROOT/build-mlp1.sh"
+    if [[ -f "$script" ]]; then
+        core_sha256 "$script"
+    fi
+}
+
+# Diagnostic only, never gated: a bind-mounted repo can fail git's ownership
+# check inside the container, and a dirty tree is normal during development.
+builder_commit() {
+    local head=""
+    if ! command -v git >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        return 0
+    fi
+    head="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" || return 0
+    [[ -n "$head" ]] || return 0
+    if git -C "$REPO_ROOT" diff --quiet HEAD -- 2>/dev/null; then
+        printf '%s' "$head"
+    else
+        printf '%s-dirty' "$head"
+    fi
 }
 
 core_sha256() {
