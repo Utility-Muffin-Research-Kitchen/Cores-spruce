@@ -85,7 +85,7 @@ Quick start:
 
 ```sh
 ./build-mlp1.sh                  # genesis_plus_gx vertical slice
-./build-mlp1.sh --stock-parity   # all 27 stock-parity cores
+./build-mlp1.sh --stock-parity   # all 28 stock-parity cores
 ./build-mlp1.sh --spruce-all     # build generic Spruce cores, report deferred
 ```
 
