@@ -54,6 +54,7 @@ STOCK_PARITY_CORES=(
     mgba
     gpsp
     mupen64plus_next
+    np2kai
     pcsx_rearmed
     picodrive
     prosystem
