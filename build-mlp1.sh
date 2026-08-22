@@ -1071,13 +1071,26 @@ build_flycast_core() {
 build_mame_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-mame"
     local make_bin
+    local mame_jobs="$JOBS"
     make_bin="$(make_tool)"
+    if ((mame_jobs > 4)); then
+        mame_jobs=4
+    fi
 
     fetch_libretro_super_core mame unix || return 1
 
     (
         cd "$src_dir" || exit 1
-        "$make_bin" -f Makefile.libretro platform=unix -j"$JOBS" \
+        "$make_bin" -f Makefile.libretro platform=unix \
+            CC="$(cross_cc)" \
+            CXX="$(cross_cxx)" \
+            AR="$(cross_ar)" \
+            RANLIB="$(cross_ranlib)" \
+            OVERRIDE_CC="$(cross_cc)" \
+            OVERRIDE_CXX="$(cross_cxx)" \
+            OVERRIDE_AR="$(cross_ar)" \
+            clean || exit 1
+        "$make_bin" -f Makefile.libretro platform=unix -j"$mame_jobs" \
             CC="$(cross_cc)" \
             CXX="$(cross_cxx)" \
             AR="$(cross_ar)" \
