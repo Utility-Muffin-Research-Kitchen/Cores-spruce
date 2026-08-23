@@ -133,6 +133,41 @@ def validate_report_summary(report: dict) -> dict[str, list[dict]]:
                     f"{core}: {status} row must have an empty library_name"
                 )
 
+    cache_fields = {"cache_version", "compiled_count", "reused_count"}
+    present_cache_fields = cache_fields.intersection(report)
+    if present_cache_fields:
+        if present_cache_fields != cache_fields:
+            raise ReportError("cache_version, compiled_count, and reused_count must appear together")
+        if report["cache_version"] != 1:
+            raise ReportError(f"cache_version must be 1, got {report['cache_version']!r}")
+        compiled_count = nonnegative_report_int(report, "compiled_count")
+        reused_count = nonnegative_report_int(report, "reused_count")
+        if compiled_count + reused_count != built_count:
+            raise ReportError(
+                "compiled_count + reused_count must equal built_count"
+            )
+        action_counts = {"compiled": 0, "reused": 0}
+        for row in rows_by_status["built"]:
+            core = row["core"]
+            action = row.get("build_action")
+            if action == "compiled":
+                action_counts["compiled"] += 1
+            elif action in {"reused", "adopted"}:
+                action_counts["reused"] += 1
+            else:
+                raise ReportError(f"{core}: invalid build_action {action!r}")
+            fingerprint = row.get("input_fingerprint")
+            if (
+                not isinstance(fingerprint, str)
+                or len(fingerprint) != 64
+                or any(ch not in "0123456789abcdef" for ch in fingerprint)
+            ):
+                raise ReportError(f"{core}: invalid input_fingerprint")
+        if action_counts["compiled"] != compiled_count:
+            raise ReportError("compiled_count does not match core build_action rows")
+        if action_counts["reused"] != reused_count:
+            raise ReportError("reused_count does not match core build_action rows")
+
     return rows_by_status
 
 

@@ -16,20 +16,22 @@ TOOLCHAIN_REPO="${TOOLCHAIN_REPO:-$DEFAULT_TOOLCHAIN_REPO}"
 SPRUCE_OS_DIR="${SPRUCE_OS_DIR:-$DEFAULT_SPRUCE_OS_DIR}"
 CORES_WORKDIR="${CORES_WORKDIR:-$REPO_ROOT/workdir}"
 LIBRETRO_SUPER_SRC_DIR="${LIBRETRO_SUPER_SRC_DIR:-$CORES_WORKDIR/src/libretro-super}"
-EASYRPG_REF="${EASYRPG_REF:-}"
-FAKE08_URL="${FAKE08_URL:-https://github.com/jtothebell/fake-08.git}"
-FAKE08_REF="${FAKE08_REF:-}"
-GPSP_URL="${GPSP_URL:-https://github.com/libretro/gpsp.git}"
-GPSP_REF="${GPSP_REF:-69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4}"
-MGBA_URL="${MGBA_URL:-https://github.com/libretro/mgba.git}"
-MGBA_REF="${MGBA_REF:-e31759b24e7a4e3899285ff720d7b573ac328ae7}"
+LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-https://github.com/libretro/libretro-super.git}"
+LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-b344383eb04aae786d8a9565fe2a61d940a574c0}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/output/mlp1}"
 CORES_OUTPUT_DIR="${CORES_OUTPUT_DIR:-$OUTPUT_DIR/cores}"
 INFO_OUTPUT_DIR="${INFO_OUTPUT_DIR:-$OUTPUT_DIR/info}"
+REPORT_PATH_EXPLICIT="${REPORT_PATH+1}"
+REPORT_JSON_PATH_EXPLICIT="${REPORT_JSON_PATH+1}"
 REPORT_PATH="${REPORT_PATH:-$OUTPUT_DIR/build-report.txt}"
 REPORT_JSON_PATH="${REPORT_JSON_PATH:-${REPORT_PATH%.txt}.json}"
 CORE_INFO_PROBE_PATH="${CORE_INFO_PROBE_PATH:-$OUTPUT_DIR/tools/mlp1-core-info-probe}"
 CORE_INFO_PROBE_LIBRARY_DIR="${CORE_INFO_PROBE_LIBRARY_DIR:-$OUTPUT_DIR/tools/lib}"
+MLP1_CORE_LOCK="${MLP1_CORE_LOCK:-$REPO_ROOT/config/mlp1-core-lock.json}"
+MLP1_CORE_CACHE="${MLP1_CORE_CACHE:-$OUTPUT_DIR/core-cache.json}"
+MLP1_CORE_CACHE_TOOL="${MLP1_CORE_CACHE_TOOL:-$REPO_ROOT/scripts/mlp1-core-cache.py}"
+MLP1_TOOLCHAIN_ID="${MLP1_TOOLCHAIN_ID:-}"
+FORCE_REBUILD_CORES="${FORCE_REBUILD_CORES:-0}"
 JOBS="${JOBS:-}"
 MLP1_BUILD_PROFILE="${MLP1_BUILD_PROFILE:-release}"
 
@@ -281,6 +283,8 @@ usage() {
 Usage:
   ./build-mlp1.sh [core ...]
   ./build-mlp1.sh --stock-parity
+  ./build-mlp1.sh --check-stock-parity-cache
+  ./build-mlp1.sh --adopt-stock-parity-cache --reference-zip ZIP --reference-sha256 SHA256
   ./build-mlp1.sh --spruce-all
   ./build-mlp1.sh --spruce-buildable
   ./build-mlp1.sh --list-stock-parity
@@ -294,6 +298,7 @@ Outputs:
   $INFO_OUTPUT_DIR
   $REPORT_PATH
   $REPORT_JSON_PATH
+  $MLP1_CORE_CACHE
   $CORE_INFO_PROBE_PATH
   $CORE_INFO_PROBE_LIBRARY_DIR
 EOF
@@ -400,6 +405,78 @@ for arg in "$@"; do
     esac
 done
 
+load_host_build_context() {
+    if [[ -f "$TOOLCHAIN_REPO/flags/mlp1-build-flags.env" ]]; then
+        # shellcheck source=/dev/null
+        . "$TOOLCHAIN_REPO/flags/mlp1-build-flags.env"
+    else
+        UMRK_MLP1_TARGET_SOC="rk3566"
+        UMRK_MLP1_TARGET_CPU="cortex-a55"
+        UMRK_MLP1_BUILD_PROFILE="$MLP1_BUILD_PROFILE"
+        UMRK_MLP1_PROFILE_CFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
+        UMRK_MLP1_PROFILE_CXXFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
+        UMRK_MLP1_PROFILE_LDFLAGS="-Wl,--gc-sections"
+    fi
+}
+
+set_cache_args() {
+    CACHE_ARGS=(
+        --lock "$MLP1_CORE_LOCK"
+        --cache "$MLP1_CORE_CACHE"
+        --cores-dir "$CORES_OUTPUT_DIR"
+        --info-dir "$INFO_OUTPUT_DIR"
+        --patch-dir "$REPO_ROOT/patches/mlp1"
+        --libretro-super-url "$LIBRETRO_SUPER_URL"
+        --libretro-super-commit "$LIBRETRO_SUPER_REF"
+        --toolchain-id "$MLP1_TOOLCHAIN_ID"
+        --target-soc "$UMRK_MLP1_TARGET_SOC"
+        --target-cpu "$UMRK_MLP1_TARGET_CPU"
+        --build-profile "${UMRK_MLP1_BUILD_PROFILE:-$MLP1_BUILD_PROFILE}"
+        "--cflags=$UMRK_MLP1_PROFILE_CFLAGS"
+        "--cxxflags=$UMRK_MLP1_PROFILE_CXXFLAGS"
+        "--ldflags=$UMRK_MLP1_PROFILE_LDFLAGS"
+    )
+    local core
+    for core in "${STOCK_PARITY_CORES[@]}"; do
+        CACHE_ARGS+=(--core "$core")
+    done
+}
+
+run_host_cache_command() {
+    local command="$1"
+    shift
+    [[ -x "$MLP1_CORE_CACHE_TOOL" ]] || {
+        echo "missing MLP1 core cache tool: $MLP1_CORE_CACHE_TOOL" >&2
+        exit 2
+    }
+    [[ -n "$TOOLCHAIN_REPO" ]] || {
+        echo "TOOLCHAIN_REPO is required to resolve the MLP1 build profile" >&2
+        exit 2
+    }
+    load_host_build_context
+    if [[ -z "$MLP1_TOOLCHAIN_ID" ]]; then
+        MLP1_TOOLCHAIN_ID="$(docker image inspect --format '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null)" || {
+            echo "missing Docker image: $TOOLCHAIN_IMAGE" >&2
+            exit 2
+        }
+    fi
+    set_cache_args
+    python3 "$MLP1_CORE_CACHE_TOOL" "$command" "${CACHE_ARGS[@]}" "$@"
+}
+
+case "${1:-}" in
+    --check-stock-parity-cache)
+        shift
+        run_host_cache_command check "$@"
+        exit $?
+        ;;
+    --adopt-stock-parity-cache)
+        shift
+        run_host_cache_command adopt --report "$REPORT_JSON_PATH" "$@"
+        exit $?
+        ;;
+esac
+
 if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
     if [[ -z "$TOOLCHAIN_REPO" ]]; then
         echo "TOOLCHAIN_REPO is required when ../mlp1-toolchain is not present." >&2
@@ -411,22 +488,43 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
         exit 1
     fi
 
+    if [[ -z "$MLP1_TOOLCHAIN_ID" ]]; then
+        MLP1_TOOLCHAIN_ID="$(docker image inspect --format '{{.Id}}' "$TOOLCHAIN_IMAGE")"
+    fi
+    container_report_path="/workspace/output/mlp1/build-report.txt"
+    container_report_json_path="/workspace/output/mlp1/build-report.json"
+    if [[ -z "$REPORT_PATH_EXPLICIT" && -z "$REPORT_JSON_PATH_EXPLICIT" ]]; then
+        aggregate=0
+        for arg in "$@"; do
+            case "$arg" in
+                --stock-parity|--spruce-all|--spruce-installed|--spruce-buildable)
+                    aggregate=1
+                    ;;
+            esac
+        done
+        if [[ "$aggregate" == "0" ]]; then
+            container_report_path="/workspace/output/mlp1/targeted-build-report.txt"
+            container_report_json_path="/workspace/output/mlp1/targeted-build-report.json"
+        fi
+    fi
+
     docker_args=(
         --rm
         -e IN_MLP1_CONTAINER=1
         -e LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-}"
         -e LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-}"
-        -e GPSP_URL="$GPSP_URL"
-        -e GPSP_REF="$GPSP_REF"
-        -e MGBA_URL="$MGBA_URL"
-        -e MGBA_REF="$MGBA_REF"
         -e CORES_WORKDIR=/workspace/workdir
         -e LIBRETRO_SUPER_SRC_DIR=/workspace/workdir/src/libretro-super
         -e OUTPUT_DIR=/workspace/output/mlp1
         -e CORES_OUTPUT_DIR=/workspace/output/mlp1/cores
         -e INFO_OUTPUT_DIR=/workspace/output/mlp1/info
-        -e REPORT_PATH=/workspace/output/mlp1/build-report.txt
-        -e REPORT_JSON_PATH=/workspace/output/mlp1/build-report.json
+        -e REPORT_PATH="$container_report_path"
+        -e REPORT_JSON_PATH="$container_report_json_path"
+        -e MLP1_CORE_LOCK=/workspace/config/mlp1-core-lock.json
+        -e MLP1_CORE_CACHE=/workspace/output/mlp1/core-cache.json
+        -e MLP1_CORE_CACHE_TOOL=/workspace/scripts/mlp1-core-cache.py
+        -e MLP1_TOOLCHAIN_ID="$MLP1_TOOLCHAIN_ID"
+        -e FORCE_REBUILD_CORES="$FORCE_REBUILD_CORES"
         -e CORE_INFO_PROBE_PATH=/workspace/output/mlp1/tools/mlp1-core-info-probe
         -e CORE_INFO_PROBE_LIBRARY_DIR=/workspace/output/mlp1/tools/lib
         -e JOBS="${JOBS:-}"
@@ -459,6 +557,12 @@ else
     UMRK_MLP1_PROFILE_CXXFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
     UMRK_MLP1_PROFILE_LDFLAGS="-Wl,--gc-sections"
 fi
+
+if [[ "$FORCE_REBUILD_CORES" != "0" && "$FORCE_REBUILD_CORES" != "1" ]]; then
+    echo "FORCE_REBUILD_CORES must be 0 or 1" >&2
+    exit 2
+fi
+set_cache_args
 
 declare -a requested_cores=()
 declare -a deferred_cores=()
@@ -576,8 +680,10 @@ report_add_row() {
     local build_lane="${11:-}"
     local sha256="${12:-}"
     local library_name="${13:-}"
+    local build_action="${14:-}"
+    local input_fingerprint="${15:-}"
 
-    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning$REPORT_SEP$source_url$REPORT_SEP$source_commit$REPORT_SEP$build_lane$REPORT_SEP$sha256$REPORT_SEP$library_name")
+    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning$REPORT_SEP$source_url$REPORT_SEP$source_commit$REPORT_SEP$build_lane$REPORT_SEP$sha256$REPORT_SEP$library_name$REPORT_SEP$build_action$REPORT_SEP$input_fingerprint")
 }
 
 write_json_report() {
@@ -589,16 +695,35 @@ write_json_report() {
     fi
 
     local built_count=0
-    local row row_status
+    local compiled_count=0
+    local reused_count=0
+    local named_count=0
+    local row row_status row_library_name row_build_action
     for row in "${REPORT_ROWS[@]}"; do
-        IFS="$REPORT_SEP" read -r _ row_status _ <<<"$row"
+        IFS="$REPORT_SEP" read -r _ row_status _ _ _ _ _ _ _ _ _ _ row_library_name row_build_action _ <<<"$row"
         if [[ "$row_status" == "built" ]]; then
             built_count=$((built_count + 1))
+            case "$row_build_action" in
+                compiled)
+                    compiled_count=$((compiled_count + 1))
+                    ;;
+                reused)
+                    reused_count=$((reused_count + 1))
+                    ;;
+            esac
+            if [[ -n "$row_library_name" ]]; then
+                named_count=$((named_count + 1))
+            fi
         fi
     done
     local library_name_status="not-applicable"
+    local library_name_count=0
     if [[ "$built_count" -gt 0 ]]; then
         library_name_status="pending"
+        if [[ "$compiled_count" -eq 0 && "$named_count" -eq "$built_count" ]]; then
+            library_name_status="complete"
+            library_name_count="$named_count"
+        fi
     fi
 
     {
@@ -617,10 +742,13 @@ write_json_report() {
         printf '  "status": "%s",\n' "$status"
         printf '  "requested_count": %d,\n' "${#requested_cores[@]}"
         printf '  "built_count": %d,\n' "$built_count"
+        printf '  "compiled_count": %d,\n' "$compiled_count"
+        printf '  "reused_count": %d,\n' "$reused_count"
+        printf '  "cache_version": 1,\n'
         printf '  "failed_count": %d,\n' "$failed_count"
         printf '  "deferred_count": %d,\n' "$deferred_count"
         printf '  "library_name_status": "%s",\n' "$library_name_status"
-        printf '  "library_name_count": 0,\n'
+        printf '  "library_name_count": %d,\n' "$library_name_count"
         printf '  "output_dir": "%s",\n' "$(json_escape "$OUTPUT_DIR")"
         printf '  "cores_output_dir": "%s",\n' "$(json_escape "$CORES_OUTPUT_DIR")"
         printf '  "info_output_dir": "%s",\n' "$(json_escape "$INFO_OUTPUT_DIR")"
@@ -628,7 +756,10 @@ write_json_report() {
         printf '  "cores": [\n'
         local index=0
         for row in "${REPORT_ROWS[@]}"; do
-            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane sha256 library_name <<<"$row"
+            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane sha256 library_name build_action input_fingerprint <<<"$row"
+            if [[ "$library_name_status" != "complete" ]]; then
+                library_name=""
+            fi
             if [[ "$index" -gt 0 ]]; then
                 printf ',\n'
             fi
@@ -645,7 +776,9 @@ write_json_report() {
             printf '      "source_commit": "%s",\n' "$(json_escape "$source_commit")"
             printf '      "build_lane": "%s",\n' "$(json_escape "$build_lane")"
             printf '      "sha256": "%s",\n' "$(json_escape "$sha256")"
-            printf '      "library_name": "%s"\n' "$(json_escape "$library_name")"
+            printf '      "library_name": "%s",\n' "$(json_escape "$library_name")"
+            printf '      "build_action": "%s",\n' "$(json_escape "$build_action")"
+            printf '      "input_fingerprint": "%s"\n' "$(json_escape "$input_fingerprint")"
             printf '    }'
             index=$((index + 1))
         done
@@ -820,7 +953,7 @@ stage_built_cores_since() {
             echo "note: $core staged a binary identical to the previous build: $sha256" >&2
         fi
         printf 'built %s %s\n' "$core" "$core_file" >>"$REPORT_PATH"
-        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}" "$sha256" ""
+        report_add_row "$core" "built" "$core_file" "$info_file" "" "$machine" "$max_glibc" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}" "$sha256" "" "compiled" "${CURRENT_CORE_INPUT_FINGERPRINT:-}"
     done < <(find "$CORES_OUTPUT_DIR" -maxdepth 1 -type f -name '*_libretro.so' -newer "$stamp_file" | sort)
 
     if [[ "$built" -eq 1 ]]; then
@@ -834,17 +967,7 @@ stage_built_cores_since() {
 
 build_fake08_core() {
     local src_dir="$CORES_WORKDIR/src/fake-08"
-
-    if [[ ! -d "$src_dir/.git" ]]; then
-        rm -rf "$src_dir"
-        git clone --depth 1 --recurse-submodules "$FAKE08_URL" "$src_dir" || return 1
-    fi
-
-    if [[ -n "$FAKE08_REF" ]]; then
-        git -C "$src_dir" fetch origin "$FAKE08_REF" || true
-        git -C "$src_dir" checkout "$FAKE08_REF" || return 1
-    fi
-    git -C "$src_dir" submodule update --init --recursive || return 1
+    prepare_locked_core fake08 || return 1
 
     make -C "$src_dir/platform/libretro" \
         CC="${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}-gcc" \
@@ -855,32 +978,7 @@ build_fake08_core() {
 
 build_gpsp_core() {
     local src_dir="$CORES_WORKDIR/src/gpsp"
-    local resolved_commit
-
-    if [[ ! "$GPSP_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-        echo "GPSP_REF must be a full 40-character commit SHA: $GPSP_REF" >&2
-        return 1
-    fi
-
-    mkdir -p "$(dirname "$src_dir")"
-    if [[ ! -d "$src_dir/.git" ]]; then
-        rm -rf "$src_dir"
-        git clone "$GPSP_URL" "$src_dir" || return 1
-    fi
-
-    git -C "$src_dir" remote set-url origin "$GPSP_URL" || return 1
-    git -C "$src_dir" fetch --tags --prune origin || return 1
-    if ! git -C "$src_dir" cat-file -e "${GPSP_REF}^{commit}" 2>/dev/null; then
-        echo "gpSP source pin is unavailable: $GPSP_REF" >&2
-        return 1
-    fi
-    git -C "$src_dir" -c advice.detachedHead=false checkout --detach "$GPSP_REF" || return 1
-    resolved_commit="$(git -C "$src_dir" rev-parse HEAD)"
-    if [[ "$resolved_commit" != "$GPSP_REF" ]]; then
-        echo "gpSP resolved commit differs from requested pin: $resolved_commit" >&2
-        return 1
-    fi
-    git -C "$src_dir" clean -ffdx || return 1
+    prepare_locked_core gpsp || return 1
 
     (
         cd "$src_dir" || exit 1
@@ -893,8 +991,6 @@ build_gpsp_core() {
         cp -f gpsp_libretro.so "$CORES_OUTPUT_DIR/gpsp_libretro.so" || exit 1
     ) || return 1
 
-    CURRENT_CORE_SOURCE_URL="$GPSP_URL"
-    CURRENT_CORE_SOURCE_COMMIT="$resolved_commit"
 }
 
 # mGBA deleted Makefile.libretro in upstream 89404771c, so libretro-super's
@@ -904,36 +1000,8 @@ build_gpsp_core() {
 build_mgba_core() {
     local src_dir="$CORES_WORKDIR/src/mgba"
     local build_dir="$src_dir/build"
-    local resolved_commit
     local -a cmake_args=()
-
-    if [[ ! "$MGBA_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-        echo "MGBA_REF must be a full 40-character commit SHA: $MGBA_REF" >&2
-        return 1
-    fi
-
-    mkdir -p "$(dirname "$src_dir")"
-    if [[ ! -d "$src_dir/.git" ]]; then
-        rm -rf "$src_dir"
-        git clone "$MGBA_URL" "$src_dir" || return 1
-    fi
-
-    git -C "$src_dir" remote set-url origin "$MGBA_URL" || return 1
-    git -C "$src_dir" fetch --tags --prune origin || return 1
-    if ! git -C "$src_dir" cat-file -e "${MGBA_REF}^{commit}" 2>/dev/null; then
-        echo "mGBA source pin is unavailable: $MGBA_REF" >&2
-        return 1
-    fi
-    git -C "$src_dir" -c advice.detachedHead=false checkout --detach "$MGBA_REF" || return 1
-    resolved_commit="$(git -C "$src_dir" rev-parse HEAD)"
-    if [[ "$resolved_commit" != "$MGBA_REF" ]]; then
-        echo "mGBA resolved commit differs from requested pin: $resolved_commit" >&2
-        return 1
-    fi
-    # mGBA derives its reported version from git describe, so a tracked
-    # modification would ship a core that calls itself "-dirty".
-    git -C "$src_dir" reset --hard "$MGBA_REF" || return 1
-    git -C "$src_dir" clean -ffdx || return 1
+    prepare_locked_core mgba || return 1
 
     cmake_args=(
         -S "$src_dir"
@@ -956,8 +1024,6 @@ build_mgba_core() {
     cmake --build "$build_dir" -j"$JOBS" || return 1
     cp -f "$build_dir/mgba_libretro.so" "$CORES_OUTPUT_DIR/mgba_libretro.so" || return 1
 
-    CURRENT_CORE_SOURCE_URL="$MGBA_URL"
-    CURRENT_CORE_SOURCE_COMMIT="$resolved_commit"
 }
 
 build_easyrpg_core() {
@@ -971,19 +1037,7 @@ build_easyrpg_core() {
         -DPLAYER_BUILD_LIBLCF=ON
     )
 
-    (
-        cd "$LIBRETRO_SUPER_SRC_DIR" || exit 1
-        platform=unix ARCH=aarch64 \
-            HOST_CC="${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}" \
-            RARCH_DIST_DIR="$CORES_OUTPUT_DIR" \
-            JOBS="$JOBS" \
-            ./libretro-fetch.sh easyrpg || exit 1
-    ) || return 1
-
-    if [[ -n "$EASYRPG_REF" ]]; then
-        git -C "$src_dir" fetch origin "$EASYRPG_REF" || true
-        git -C "$src_dir" checkout "$EASYRPG_REF" || return 1
-    fi
+    prepare_locked_core easyrpg || return 1
 
     if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
         cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE")
@@ -1035,18 +1089,47 @@ purge_stale_core_artifacts() {
     fi
 }
 
+core_lock_value() {
+    local core="$1"
+    local field="$2"
+    python3 "$MLP1_CORE_CACHE_TOOL" lock-value "${CACHE_ARGS[@]}" \
+        --selected-core "$core" --field "$field"
+}
+
+prepare_locked_core() {
+    local core="$1"
+    local source_url source_commit checkout src_dir resolved_commit
+    source_url="$(core_lock_value "$core" url)" || return 1
+    source_commit="$(core_lock_value "$core" commit)" || return 1
+    checkout="$(core_lock_value "$core" checkout)" || return 1
+    src_dir="$CORES_WORKDIR/src/$checkout"
+
+    mkdir -p "$(dirname "$src_dir")"
+    if [[ ! -d "$src_dir/.git" ]]; then
+        rm -rf "$src_dir"
+        git clone --no-checkout "$source_url" "$src_dir" || return 1
+    fi
+    git -C "$src_dir" remote set-url origin "$source_url" || return 1
+    if ! git -C "$src_dir" cat-file -e "${source_commit}^{commit}" 2>/dev/null; then
+        git -C "$src_dir" fetch --no-tags origin "$source_commit" || return 1
+    fi
+    git -C "$src_dir" -c advice.detachedHead=false checkout --detach --force "$source_commit" || return 1
+    git -C "$src_dir" clean -ffdx || return 1
+    git -C "$src_dir" submodule sync --recursive || return 1
+    git -C "$src_dir" submodule update --init --recursive || return 1
+    resolved_commit="$(git -C "$src_dir" rev-parse HEAD)"
+    if [[ "$resolved_commit" != "$source_commit" ]]; then
+        echo "$core resolved commit differs from its source lock: $resolved_commit" >&2
+        return 1
+    fi
+
+    CURRENT_CORE_SOURCE_URL="$source_url"
+    CURRENT_CORE_SOURCE_COMMIT="$source_commit"
+}
+
 fetch_libretro_super_core() {
     local core="$1"
-    local platform_name="${2:-unix}"
-
-    (
-        cd "$LIBRETRO_SUPER_SRC_DIR" || exit 1
-        platform="$platform_name" ARCH=aarch64 \
-            HOST_CC="$(cross_prefix)" \
-            RARCH_DIST_DIR="$CORES_OUTPUT_DIR" \
-            JOBS="$JOBS" \
-            ./libretro-fetch.sh "$core" || exit 1
-    )
+    prepare_locked_core "$core"
 }
 
 apply_mlp1_core_patch() {
@@ -1240,6 +1323,28 @@ core_tuning_status() {
     esac
 }
 
+reuse_cached_core() {
+    local selected_core="$1"
+    local cached_row
+    if ! cached_row="$(python3 "$MLP1_CORE_CACHE_TOOL" reuse "${CACHE_ARGS[@]}" \
+        --selected-core "$selected_core")"; then
+        return 1
+    fi
+
+    local core status core_file info_file reason machine max_glibc tuning
+    local source_url source_commit build_lane sha256 library_name build_action
+    local input_fingerprint
+    IFS="$REPORT_SEP" read -r core status core_file info_file reason machine \
+        max_glibc tuning source_url source_commit build_lane sha256 library_name \
+        build_action input_fingerprint <<<"$cached_row"
+    printf 'reused %s %s\n' "$core" "$core_file" >>"$REPORT_PATH"
+    echo "=== Reusing $core for MLP1 ==="
+    report_add_row "$core" "$status" "$core_file" "$info_file" "$reason" \
+        "$machine" "$max_glibc" "$tuning" "$source_url" "$source_commit" \
+        "$build_lane" "$sha256" "$library_name" "$build_action" \
+        "$input_fingerprint"
+}
+
 build_one_core() {
     local core="$1"
     local stamp_file
@@ -1259,9 +1364,11 @@ build_one_core() {
 
     touch "$stamp_file"
     CURRENT_CORE_TUNING="$(core_tuning_status "$core")"
-    CURRENT_CORE_SOURCE_URL=""
-    CURRENT_CORE_SOURCE_COMMIT=""
+    CURRENT_CORE_SOURCE_URL="$(core_lock_value "$core" url)"
+    CURRENT_CORE_SOURCE_COMMIT="$(core_lock_value "$core" commit)"
     CURRENT_CORE_BUILD_LANE="$(core_build_lane "$core")"
+    CURRENT_CORE_INPUT_FINGERPRINT="$(python3 "$MLP1_CORE_CACHE_TOOL" fingerprint \
+        "${CACHE_ARGS[@]}" --selected-core "$core")"
 
     local build_status=1
     case "$core" in
@@ -1308,7 +1415,7 @@ build_one_core() {
 
     rm -f "$stamp_file"
     printf 'failed %s build failed\n' "$core" >>"$REPORT_PATH"
-    report_add_row "$core" "failed" "" "" "build failed" "" "" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}"
+    report_add_row "$core" "failed" "" "" "build failed" "" "" "${CURRENT_CORE_TUNING:-unknown}" "${CURRENT_CORE_SOURCE_URL:-}" "${CURRENT_CORE_SOURCE_COMMIT:-}" "${CURRENT_CORE_BUILD_LANE:-unknown}" "" "" "compiled" "${CURRENT_CORE_INPUT_FINGERPRINT:-}"
     return 1
 }
 
@@ -1318,6 +1425,10 @@ if ! build_core_info_probe; then
     exit 1
 fi
 for core in "${requested_cores[@]}"; do
+    if [[ "$build_mode" == "stock-parity" && "$FORCE_REBUILD_CORES" == "0" ]] \
+        && reuse_cached_core "$core"; then
+        continue
+    fi
     if ! build_one_core "$core"; then
         failed_cores+=("$core")
     fi
@@ -1332,6 +1443,8 @@ echo
 echo "=== MLP1 core build report ==="
 cat "$REPORT_PATH"
 write_json_report "${#failed_cores[@]}" "${#deferred_cores[@]}"
+python3 "$MLP1_CORE_CACHE_TOOL" update "${CACHE_ARGS[@]}" \
+    --report "$REPORT_JSON_PATH"
 echo "JSON report: $REPORT_JSON_PATH"
 
 if [[ ${#failed_cores[@]} -gt 0 ]]; then

@@ -115,6 +115,7 @@ Outputs:
 - info files: `output/mlp1/info/*.info`
 - build report: `output/mlp1/build-report.txt`
 - JSON build report: `output/mlp1/build-report.json`
+- local input-fingerprint cache: `output/mlp1/core-cache.json`
 - AArch64 core-info probe: `output/mlp1/tools/mlp1-core-info-probe`
 - Probe-only dependency closure: `output/mlp1/tools/lib/`
 
@@ -127,15 +128,10 @@ cores. The gpSP lane checks out its pinned upstream commit and builds with
 The mGBA lane builds from its own pinned checkout with CMake. Upstream deleted
 `Makefile.libretro`, so the `libretro-super` rule for this core no longer works;
 because that rule's failure is not fatal, the generic lane used to re-copy the
-previous build's `.so` and report it as `built`. Both source pins are settable:
-
-| Variable | Default |
-| --- | --- |
-| `GPSP_URL` / `GPSP_REF` | `libretro/gpsp` @ `69e86ebe8` |
-| `MGBA_URL` / `MGBA_REF` | `libretro/mgba` @ `e31759b24` |
-
-A `*_REF` must be a full 40-character commit SHA; the build fails rather than
-falling back to a branch if the pin cannot be resolved. Both lanes record
+previous build's `.so` and report it as `built`. Every stock-parity source URL,
+full commit, checkout path, and recipe identity is pinned in
+`config/mlp1-core-lock.json`; the build fails rather than falling back to a
+branch if a pin cannot be resolved. The dedicated lanes record
 `source_url`, `source_commit`, and `build_lane` in the JSON report.
 
 The generic np2kai lane applies the repo-owned `patches/mlp1/np2kai.patch`
@@ -147,6 +143,36 @@ Every lane's previously staged core is removed before its build runs, so a lane
 that produces nothing is reported as `failed`, never as `built`. If a build
 stages a binary byte-identical to the one it replaced, the text report notes it
 on an `unchanged` line.
+
+### Stock-parity cache
+
+`--stock-parity` is incremental. A core is reused only when its locked source,
+recipe identity, managed patch, libretro-super pin, toolchain image, target,
+profile flags, binary checksum, and info-file checksum all match its local cache
+entry. Its JSON row records `build_action` and `input_fingerprint`; the report
+summary records `compiled_count` and `reused_count`.
+
+Inspect the cache without entering the build container or compiling anything:
+
+```sh
+./build-mlp1.sh --check-stock-parity-cache
+```
+
+The one-time adoption command requires a complete local report, an immutable
+reference ZIP, and that ZIP's published SHA-256. It verifies the local core
+bytes against both reports and the binaries stored in the ZIP before writing
+the cache:
+
+```sh
+./build-mlp1.sh --adopt-stock-parity-cache \
+    --reference-zip /absolute/path/to/published-release.zip \
+    --reference-sha256 <published-sha256>
+```
+
+Set `FORCE_REBUILD_CORES=1` with `--stock-parity` to bypass all hits. Explicit
+core arguments always build the requested cores and update only their cache
+entries. Their reports are written to `targeted-build-report.txt` and
+`targeted-build-report.json`, leaving the canonical full report untouched.
 
 `--spruce-all` builds the generic `libretro-super` subset and the local
 dedicated lanes, then records unported Spruce cores as deferred. Use the script
