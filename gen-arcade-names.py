@@ -45,6 +45,10 @@ FLYCAST_GAME_RE = re.compile(
     ''',
     re.MULTILINE | re.VERBOSE,
 )
+FLYCAST_GDROM_RE = re.compile(
+    r'^\s*\},\s*\n\s*(?P<gdrom>nullptr|"[^"]+")\s*,',
+    re.MULTILINE,
+)
 
 
 def trim_title(desc):
@@ -73,7 +77,8 @@ def parse_flycast(path):
         text = source.read()
     names = {}
     systems = {"atomiswave": set(), "naomi": set()}
-    for match in FLYCAST_GAME_RE.finditer(text):
+    matches = list(FLYCAST_GAME_RE.finditer(text))
+    for index, match in enumerate(matches):
         cart = match.group("cart")
         bios = match.group("bios").strip('"')
         if cart == "AW":
@@ -90,6 +95,16 @@ def parse_flycast(path):
         if rom and title:
             names[rom] = title
             systems[system].add(rom)
+        if cart == "GD":
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            gdrom_match = FLYCAST_GDROM_RE.search(text, match.end(), end)
+            if not gdrom_match or gdrom_match.group("gdrom") == "nullptr":
+                raise ValueError("no GD-ROM media name for %s" % rom)
+            gdrom = gdrom_match.group("gdrom").strip('"').lower()
+            previous = names.get(gdrom)
+            if previous and previous != title:
+                raise ValueError("conflicting Flycast title for %s" % gdrom)
+            names[gdrom] = title
     if not systems["atomiswave"] or not systems["naomi"]:
         raise ValueError("no Atomiswave/Naomi games found in %s" % path)
     return names, {key: len(value) for key, value in systems.items()}

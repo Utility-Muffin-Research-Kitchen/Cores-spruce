@@ -24,7 +24,11 @@ const Game Games[] = {
     "mvsc2", nullptr, "Marvel vs. Capcom 2 - New Age", 1, 2, "naomi", M1,
   },
   {
-    "vf4", nullptr, "Virtua Fighter 4", 1, 2, "naomi2", GD,
+    "vf4", nullptr, "Virtua Fighter 4", 1, 2, "naomi2", GD, ROT0,
+    {
+    },
+    "gds-0012",
+    nullptr,
   },
   {
     "dinoking", nullptr, "Dinosaur King", 1, 2, "segasp", M4,
@@ -41,6 +45,7 @@ const Game Games[] = {
                 "mslug6": "Metal Slug 6",
                 "mvsc2": "Marvel vs. Capcom 2",
                 "vf4": "Virtua Fighter 4",
+                "gds-0012": "Virtua Fighter 4",
             },
             names,
         )
