@@ -1,0 +1,21 @@
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -355,6 +355,17 @@ else ifneq (,$(findstring arm64_cortex_a53_gles2,$(platform)))
+    COREFLAGS += -DOS_LINUX
+    ASFLAGS = -f elf64 -d ELF_TYPE
+ 
++# Miniloong Pocket 1: RK3566 Cortex-A55 with the AArch64 GLES 3.0 lane
++else ifeq ($(platform), mlp1_a55_gles3)
++   TARGET := $(TARGET_NAME)_libretro.so
++   LDFLAGS += -shared -Wl,--version-script=$(LIBRETRO_DIR)/link.T -Wl,--no-undefined -ldl
++   GL_LIB := -lGLESv2
++   WITH_DYNAREC := aarch64
++   CPUFLAGS += -mcpu=cortex-a55 -mtune=cortex-a55
++   GLES3 = 1
++   COREFLAGS += -DOS_LINUX
++   ASFLAGS = -f elf64 -d ELF_TYPE
++
+ # Generic AArch64 Cortex-A53 GLES 3.0 target
+ else ifneq (,$(findstring arm64_cortex_a53_gles3,$(platform)))
+    TARGET := $(TARGET_NAME)_libretro.so

@@ -21,7 +21,7 @@
     "mame": {"url": "https://github.com/libretro/mame.git", "commit": "24cffe763621b164fc10be2ae3660f140be25182", "checkout": "libretro-super/libretro-mame", "recipe": "mame-makefile-v1"},
     "mgba": {"url": "https://github.com/libretro/mgba.git", "commit": "e31759b24e7a4e3899285ff720d7b573ac328ae7", "checkout": "mgba", "recipe": "mgba-cmake-v1"},
     "gpsp": {"url": "https://github.com/libretro/gpsp.git", "commit": "69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4", "checkout": "gpsp", "recipe": "gpsp-arm64-v1"},
-    "mupen64plus_next": {"url": "https://github.com/libretro/mupen64plus-libretro-nx.git", "commit": "f275caf4b2bfa1e6d1c51636746ea793f3d80320", "checkout": "libretro-super/libretro-mupen64plus_next", "recipe": "mupen64plus-next-a53-gles3-v1"},
+    "mupen64plus_next": {"url": "https://github.com/libretro/mupen64plus-libretro-nx.git", "commit": "f275caf4b2bfa1e6d1c51636746ea793f3d80320", "checkout": "libretro-super/libretro-mupen64plus_next", "recipe": "mupen64plus-next-mlp1-a55-gles3-v1"},
     "np2kai": {"url": "https://github.com/libretro/NP2kai.git", "commit": "ac05f003bf44f58a235f5b31de0cd42dabdbf1a8", "checkout": "libretro-super/libretro-np2kai", "recipe": "generic-libretro-super-v1"},
     "pcsx_rearmed": {"url": "https://github.com/libretro/pcsx_rearmed.git", "commit": "da2cb8ecd17fd0932ab6d94774c0522beebce6e3", "checkout": "libretro-super/libretro-pcsx_rearmed", "recipe": "generic-libretro-super-v1"},
     "picodrive": {"url": "https://github.com/libretro/picodrive.git", "commit": "733c711a477a642fd2006d5a7a581b2790ec36b4", "checkout": "libretro-super/libretro-picodrive", "recipe": "generic-libretro-super-v1"},
@@ -29,6 +29,6 @@
     "snes9x": {"url": "https://github.com/libretro/snes9x.git", "commit": "890b5d445538fe790aa3add3d5702c80f551e0ae", "checkout": "libretro-super/libretro-snes9x", "recipe": "generic-libretro-super-v1"},
     "stella2014": {"url": "https://github.com/libretro/stella2014-libretro.git", "commit": "4a7da82595d27b8df7af1ecb467a64b642a41bc9", "checkout": "libretro-super/libretro-stella2014", "recipe": "generic-libretro-super-v1"},
     "swanstation": {"url": "https://github.com/libretro/swanstation.git", "commit": "7f69c199ed88d5723f71dd3a6e9c1b7a45b535a6", "checkout": "libretro-super/libretro-swanstation", "recipe": "swanstation-cmake-v1"},
-    "yabasanshiro": {"url": "https://github.com/libretro/yabause.git", "commit": "09ed8e5b2e97e7a848ea2514545c34c7b809e399", "checkout": "libretro-super/libretro-yabasanshiro", "recipe": "yabasanshiro-a53-gles3-v1"}
+    "yabasanshiro": {"url": "https://github.com/libretro/yabause.git", "commit": "09ed8e5b2e97e7a848ea2514545c34c7b809e399", "checkout": "libretro-super/libretro-yabasanshiro", "recipe": "yabasanshiro-mlp1-a55-gles3-v1"}
   }
 }
