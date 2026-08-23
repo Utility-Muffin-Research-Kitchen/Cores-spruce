@@ -2,3 +2,4 @@ CLAUDE.md
 output/
 workdir/
 .DS_Store
+__pycache__/
