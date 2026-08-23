@@ -1115,8 +1115,12 @@ prepare_locked_core() {
     fi
     git -C "$src_dir" -c advice.detachedHead=false checkout --detach --force "$source_commit" || return 1
     git -C "$src_dir" clean -ffdx || return 1
-    git -C "$src_dir" submodule sync --recursive || return 1
-    git -C "$src_dir" submodule update --init --recursive || return 1
+    # Some upstream commits contain an unused gitlink without a .gitmodules
+    # entry. Initialize declared dependencies, but do not invent URLs for it.
+    if [[ -f "$src_dir/.gitmodules" ]]; then
+        git -C "$src_dir" submodule sync --recursive || return 1
+        git -C "$src_dir" submodule update --init --recursive || return 1
+    fi
     resolved_commit="$(git -C "$src_dir" rev-parse HEAD)"
     if [[ "$resolved_commit" != "$source_commit" ]]; then
         echo "$core resolved commit differs from its source lock: $resolved_commit" >&2
@@ -1204,30 +1208,77 @@ build_mame_core() {
     )
 }
 
+verify_a55_compile_log() {
+    local core="$1"
+    local compile_log="$2"
+    local compile_count mcpu_count mtune_count a53_count
+    read -r compile_count mcpu_count mtune_count a53_count < <(
+        awk '
+            /^aarch64-buildroot-linux-gnu-(gcc|g\+\+) / && /(^| )-c( |$)/ {
+                compile++
+                if (index($0, "-mcpu=cortex-a55")) mcpu++
+                if (index($0, "-mtune=cortex-a55")) mtune++
+                if (index($0, "-mcpu=cortex-a53") || index($0, "-mtune=cortex-a53")) a53++
+            }
+            END { print compile + 0, mcpu + 0, mtune + 0, a53 + 0 }
+        ' "$compile_log"
+    )
+    if [[ "$compile_count" -eq 0 || "$mcpu_count" -ne "$compile_count" \
+        || "$mtune_count" -ne "$compile_count" ]]; then
+        echo "$core did not apply both Cortex-A55 flags to every captured compile command" >&2
+        return 1
+    fi
+    if [[ "$a53_count" -ne 0 ]]; then
+        echo "$core compile commands still contain a Cortex-A53 override" >&2
+        return 1
+    fi
+    case "$core" in
+        mupen64plus_next)
+            grep -Fq -- '-DEGL' "$compile_log" \
+                && grep -Fq -- '-DHAVE_OPENGLES3' "$compile_log" \
+                && grep -Fq -- '-DNEW_DYNAREC=4' "$compile_log" \
+                && grep -Fq -- 'new_dynarec/arm64/linkage_arm64.S' "$compile_log"
+            ;;
+        yabasanshiro)
+            grep -Fq -- '-DHAVE_OPENGLES3' "$compile_log" \
+                && grep -Fq -- '-DDYNAREC_DEVMIYAX=1' "$compile_log" \
+                && grep -Fq -- 'sh2_dynarec_devmiyax/dynalib_arm64.s' "$compile_log"
+            ;;
+    esac || {
+        echo "$core compile commands did not preserve its graphics/dynarec contract" >&2
+        return 1
+    }
+}
+
 build_mupen64plus_next_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-mupen64plus_next"
+    local compile_log="$OUTPUT_DIR/logs/mupen64plus_next-compile.log"
     local make_bin
     make_bin="$(make_tool)"
 
-    fetch_libretro_super_core mupen64plus_next arm64_cortex_a53_gles3 || return 1
+    fetch_libretro_super_core mupen64plus_next || return 1
+    apply_mlp1_core_patch mupen64plus_next || return 1
+    mkdir -p "$(dirname "$compile_log")"
 
     (
         cd "$src_dir" || exit 1
-        "$make_bin" platform=arm64_cortex_a53_gles3 -j"$JOBS" \
+        "$make_bin" platform=mlp1_a55_gles3 -j"$JOBS" \
             CC="$(cross_cc)" \
             CXX="$(cross_cxx)" \
             CC_AS="$(cross_cc)" \
             AR="$(cross_ar)" \
             RANLIB="$(cross_ranlib)" \
             clean || exit 1
-        "$make_bin" platform=arm64_cortex_a53_gles3 -j"$JOBS" \
+        "$make_bin" platform=mlp1_a55_gles3 -j"$JOBS" \
             CC="$(cross_cc)" \
             CXX="$(cross_cxx)" \
             CC_AS="$(cross_cc)" \
             AR="$(cross_ar)" \
-            RANLIB="$(cross_ranlib)" || exit 1
+            RANLIB="$(cross_ranlib)" 2>&1 | tee "$compile_log" || exit 1
+        verify_a55_compile_log mupen64plus_next "$compile_log" || exit 1
         cp -f mupen64plus_next_libretro.so "$CORES_OUTPUT_DIR/mupen64plus_next_libretro.so" || exit 1
-    )
+    ) || return 1
+    CURRENT_CORE_TUNING="a55-contract"
 }
 
 build_swanstation_core() {
@@ -1240,26 +1291,31 @@ build_swanstation_core() {
 
 build_yabasanshiro_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-yabasanshiro/yabause/src/libretro"
+    local compile_log="$OUTPUT_DIR/logs/yabasanshiro-compile.log"
     local make_bin
     make_bin="$(make_tool)"
 
-    fetch_libretro_super_core yabasanshiro arm64_cortex_a53_gles3 || return 1
+    fetch_libretro_super_core yabasanshiro || return 1
+    apply_mlp1_core_patch yabasanshiro || return 1
+    mkdir -p "$(dirname "$compile_log")"
 
     (
         cd "$src_dir" || exit 1
-        "$make_bin" platform=arm64_cortex_a53_gles3 -j"$JOBS" \
+        "$make_bin" platform=mlp1_a55_gles3 -j"$JOBS" \
             CC="$(cross_cc)" \
             CXX="$(cross_cxx)" \
             AR="$(cross_ar)" \
             RANLIB="$(cross_ranlib)" \
             clean || exit 1
-        "$make_bin" platform=arm64_cortex_a53_gles3 -j"$JOBS" \
+        "$make_bin" platform=mlp1_a55_gles3 -j"$JOBS" \
             CC="$(cross_cc)" \
             CXX="$(cross_cxx)" \
             AR="$(cross_ar)" \
-            RANLIB="$(cross_ranlib)" || exit 1
+            RANLIB="$(cross_ranlib)" 2>&1 | tee "$compile_log" || exit 1
+        verify_a55_compile_log yabasanshiro "$compile_log" || exit 1
         cp -f yabasanshiro_libretro.so "$CORES_OUTPUT_DIR/yabasanshiro_libretro.so" || exit 1
-    )
+    ) || return 1
+    CURRENT_CORE_TUNING="a55-contract"
 }
 
 build_libretro_super_core() {
@@ -1309,7 +1365,7 @@ core_tuning_status() {
     local core="$1"
     case "$core" in
         mupen64plus_next|yabasanshiro)
-            printf 'upstream-a53-platform'
+            printf 'a55-pending-command-proof'
             ;;
         gpsp)
             printf 'arm64-dynarec'

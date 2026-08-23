@@ -174,6 +174,15 @@ core arguments always build the requested cores and update only their cache
 entries. Their reports are written to `targeted-build-report.txt` and
 `targeted-build-report.json`, leaving the canonical full report untouched.
 
+Mupen64Plus-Next and YabaSanshiro apply repo-managed patches that add a
+dedicated `mlp1_a55_gles3` upstream Makefile platform. Each copies its former
+A53 lane's AArch64 dynarec, GLES3/EGL, linker, and assembly choices while
+changing only CPU tuning to `-mcpu=cortex-a55 -mtune=cortex-a55`. Actual compile
+commands are retained under `output/mlp1/logs/`. A build row becomes
+`a55-contract` only after every captured compiler command contains both A55
+flags, none contains an A53 override, and the core-specific graphics, dynarec,
+and ARM64 assembly markers remain present.
+
 `--spruce-all` builds the generic `libretro-super` subset and the local
 dedicated lanes, then records unported Spruce cores as deferred. Use the script
 for the current deferred list instead of trusting a static README copy:
@@ -188,8 +197,9 @@ where available. JSON report version 2 also binds every built row to the
 staged binary with `sha256` and reserves `library_name` for the exact,
 case-sensitive value returned by the core's `retro_get_system_info()`.
 
-An MLP1 build leaves `library_name_status` as `pending`. With the target device
-connected, complete the report before packaging it:
+An MLP1 report containing newly compiled core bytes leaves
+`library_name_status` as `pending`. With the target device connected, complete
+the report before packaging it:
 
 ```sh
 ADB_SERIAL=optional-device-serial ./probe-mlp1-cores-adb.sh
