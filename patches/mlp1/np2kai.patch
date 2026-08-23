@@ -1,0 +1,19 @@
+diff --git a/sdl/libretro/libretro_core_options.h b/sdl/libretro/libretro_core_options.h
+--- a/sdl/libretro/libretro_core_options.h
++++ b/sdl/libretro/libretro_core_options.h
+@@ -883,6 +883,6 @@ struct retro_core_option_definition option_defs_us[] = {
+       {NULL, NULL},
+     },
+-    "OFF"
++    "Arrows"
+   },
+   {
+     "np2kai_joynp2menu",
+@@ -1768,6 +1768,6 @@ struct retro_core_option_definition option_defs_ja[] = {
+       {NULL, NULL},
+     },
+-    "OFF"
++    "Arrows"
+   },
+   {
+     "np2kai_joynp2menu",

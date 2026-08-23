@@ -1049,6 +1049,25 @@ fetch_libretro_super_core() {
     )
 }
 
+apply_mlp1_core_patch() {
+    local core="$1"
+    local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-$core"
+    local patch_file="$REPO_ROOT/patches/mlp1/$core.patch"
+
+    if [[ ! -f "$patch_file" ]]; then
+        return 0
+    fi
+    if [[ ! -d "$src_dir/.git" ]]; then
+        echo "Expected fetched core checkout at $src_dir before applying $patch_file" >&2
+        return 1
+    fi
+    if git -C "$src_dir" apply --reverse --ignore-space-change \
+        --check "$patch_file" >/dev/null 2>&1; then
+        return 0
+    fi
+    git -C "$src_dir" apply --ignore-space-change "$patch_file"
+}
+
 build_flycast_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-flycast"
 
@@ -1164,6 +1183,7 @@ build_libretro_super_core() {
     local core="$1"
 
     fetch_libretro_super_core "$core" unix || return 1
+    apply_mlp1_core_patch "$core" || return 1
 
     # libretro-super's die() has its exit commented out, so a failed compile
     # does not stop the run: libretro-build.sh goes on to copy whatever
@@ -1210,6 +1230,9 @@ core_tuning_status() {
             ;;
         gpsp)
             printf 'arm64-dynarec'
+            ;;
+        np2kai)
+            printf 'mlp1-joypad-arrows'
             ;;
         *)
             printf 'generic-aarch64'

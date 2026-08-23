@@ -138,6 +138,11 @@ A `*_REF` must be a full 40-character commit SHA; the build fails rather than
 falling back to a branch if the pin cannot be resolved. Both lanes record
 `source_url`, `source_commit`, and `build_lane` in the JSON report.
 
+The generic np2kai lane applies the repo-owned `patches/mlp1/np2kai.patch`
+after fetching the core. It changes the first-run joypad mode
+from `OFF` to `Arrows`, giving the handheld D-pad and buttons keyboard mappings
+without preventing users from selecting np2kai's mouse or keypad modes.
+
 Every lane's previously staged core is removed before its build runs, so a lane
 that produces nothing is reported as `failed`, never as `built`. If a build
 stages a binary byte-identical to the one it replaced, the text report notes it
