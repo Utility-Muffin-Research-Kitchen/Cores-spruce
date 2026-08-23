@@ -54,6 +54,7 @@ STOCK_PARITY_CORES=(
     mgba
     gpsp
     mupen64plus_next
+    np2kai
     pcsx_rearmed
     picodrive
     prosystem
@@ -1048,6 +1049,25 @@ fetch_libretro_super_core() {
     )
 }
 
+apply_mlp1_core_patch() {
+    local core="$1"
+    local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-$core"
+    local patch_file="$REPO_ROOT/patches/mlp1/$core.patch"
+
+    if [[ ! -f "$patch_file" ]]; then
+        return 0
+    fi
+    if [[ ! -d "$src_dir/.git" ]]; then
+        echo "Expected fetched core checkout at $src_dir before applying $patch_file" >&2
+        return 1
+    fi
+    if git -C "$src_dir" apply --reverse --ignore-space-change \
+        --check "$patch_file" >/dev/null 2>&1; then
+        return 0
+    fi
+    git -C "$src_dir" apply --ignore-space-change "$patch_file"
+}
+
 build_flycast_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-flycast"
 
@@ -1070,13 +1090,26 @@ build_flycast_core() {
 build_mame_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-mame"
     local make_bin
+    local mame_jobs="$JOBS"
     make_bin="$(make_tool)"
+    if ((mame_jobs > 4)); then
+        mame_jobs=4
+    fi
 
     fetch_libretro_super_core mame unix || return 1
 
     (
         cd "$src_dir" || exit 1
-        "$make_bin" -f Makefile.libretro platform=unix -j"$JOBS" \
+        "$make_bin" -f Makefile.libretro platform=unix \
+            CC="$(cross_cc)" \
+            CXX="$(cross_cxx)" \
+            AR="$(cross_ar)" \
+            RANLIB="$(cross_ranlib)" \
+            OVERRIDE_CC="$(cross_cc)" \
+            OVERRIDE_CXX="$(cross_cxx)" \
+            OVERRIDE_AR="$(cross_ar)" \
+            clean || exit 1
+        "$make_bin" -f Makefile.libretro platform=unix -j"$mame_jobs" \
             CC="$(cross_cc)" \
             CXX="$(cross_cxx)" \
             AR="$(cross_ar)" \
@@ -1150,6 +1183,7 @@ build_libretro_super_core() {
     local core="$1"
 
     fetch_libretro_super_core "$core" unix || return 1
+    apply_mlp1_core_patch "$core" || return 1
 
     # libretro-super's die() has its exit commented out, so a failed compile
     # does not stop the run: libretro-build.sh goes on to copy whatever
@@ -1196,6 +1230,9 @@ core_tuning_status() {
             ;;
         gpsp)
             printf 'arm64-dynarec'
+            ;;
+        np2kai)
+            printf 'mlp1-joypad-arrows'
             ;;
         *)
             printf 'generic-aarch64'
