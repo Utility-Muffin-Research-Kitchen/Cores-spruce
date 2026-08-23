@@ -158,6 +158,31 @@ class Mlp1CoreReportTest(unittest.TestCase):
             "pending report must have an empty library_name"
         )
 
+    def test_incremental_summary_accepts_checksum_bound_actions(self) -> None:
+        self.report.update(
+            {"cache_version": 1, "compiled_count": 1, "reused_count": 1}
+        )
+        for row, action in zip(
+            self.report["cores"], ("compiled", "reused"), strict=True
+        ):
+            row["build_action"] = action
+            row["input_fingerprint"] = "a" * 64
+        self.write_report(self.report)
+        result = self.run_tool("manifest")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_incremental_summary_rejects_action_count_mismatch(self) -> None:
+        self.report.update(
+            {"cache_version": 1, "compiled_count": 0, "reused_count": 2}
+        )
+        for row in self.report["cores"]:
+            row["build_action"] = "compiled"
+            row["input_fingerprint"] = "a" * 64
+        self.write_report(self.report)
+        self.assert_all_commands_reject(
+            "compiled_count does not match core build_action rows"
+        )
+
     def test_complete_report_rejects_inconsistent_library_name_count(self) -> None:
         self.report["library_name_status"] = "complete"
         self.report["library_name_count"] = 1
