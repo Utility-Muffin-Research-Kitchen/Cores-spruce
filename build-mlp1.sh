@@ -60,6 +60,7 @@ STOCK_PARITY_CORES=(
     pcsx_rearmed
     picodrive
     prosystem
+    puae
     snes9x
     stella2014
     swanstation
@@ -148,6 +149,7 @@ SPRUCE_INSTALLED_CORES_FALLBACK=(
     potator
     prboom
     prosystem
+    puae
     puae2021
     puzzlescript
     px68k
@@ -246,6 +248,7 @@ SPRUCE_LIBRETRO_SUPER_CORES=(
     potator
     prboom
     prosystem
+    puae
     puae2021
     puzzlescript
     px68k
@@ -901,23 +904,27 @@ stage_core_info_probe_libraries() {
 
 copy_core_info() {
     local info_file="$1"
+    local source_info=""
 
     if [[ -f "$LIBRETRO_SUPER_SRC_DIR/dist/info/$info_file" ]]; then
-        cp -f "$LIBRETRO_SUPER_SRC_DIR/dist/info/$info_file" "$INFO_OUTPUT_DIR/$info_file"
-        return 0
+        source_info="$LIBRETRO_SUPER_SRC_DIR/dist/info/$info_file"
+    elif [[ -n "$SPRUCE_OS_DIR" && -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/info/$info_file" ]]; then
+        source_info="$SPRUCE_OS_DIR/RetroArch/.retroarch/info/$info_file"
+    elif [[ -n "$SPRUCE_OS_DIR" && -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/cores/$info_file" ]]; then
+        source_info="$SPRUCE_OS_DIR/RetroArch/.retroarch/cores/$info_file"
+    else
+        return 1
     fi
 
-    if [[ -n "$SPRUCE_OS_DIR" && -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/info/$info_file" ]]; then
-        cp -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/info/$info_file" "$INFO_OUTPUT_DIR/$info_file"
-        return 0
+    if [[ "$info_file" == "puae_libretro.info" ]]; then
+        if ! grep -q 'fdi|ipf' "$source_info"; then
+            echo "Expected PUAE core info extension sequence fdi|ipf" >&2
+            return 1
+        fi
+        sed 's/fdi|ipf/fdi|raw|ipf/' "$source_info" >"$INFO_OUTPUT_DIR/$info_file"
+    else
+        cp -f "$source_info" "$INFO_OUTPUT_DIR/$info_file"
     fi
-
-    if [[ -n "$SPRUCE_OS_DIR" && -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/cores/$info_file" ]]; then
-        cp -f "$SPRUCE_OS_DIR/RetroArch/.retroarch/cores/$info_file" "$INFO_OUTPUT_DIR/$info_file"
-        return 0
-    fi
-
-    return 1
 }
 
 stage_built_cores_since() {
@@ -1372,6 +1379,9 @@ core_tuning_status() {
             ;;
         np2kai)
             printf 'mlp1-joypad-arrows'
+            ;;
+        puae)
+            printf 'mlp1-bios-subdir'
             ;;
         *)
             printf 'generic-aarch64'

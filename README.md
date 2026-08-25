@@ -85,7 +85,7 @@ Quick start:
 
 ```sh
 ./build-mlp1.sh                  # genesis_plus_gx vertical slice
-./build-mlp1.sh --stock-parity   # all 28 stock-parity cores
+./build-mlp1.sh --stock-parity   # all 29 stock-parity cores
 ./build-mlp1.sh --spruce-all     # build generic Spruce cores, report deferred
 ```
 
@@ -138,6 +138,13 @@ The generic np2kai lane applies the repo-owned `patches/mlp1/np2kai.patch`
 after fetching the core. It changes the first-run joypad mode
 from `OFF` to `Arrows`, giving the handheld D-pad and buttons keyboard mappings
 without preventing users from selecting np2kai's mouse or keypad modes.
+
+The generic PUAE lane applies `patches/mlp1/puae.patch` so the MLP1 Unix build
+links its math dependency and all Amiga firmware and support data are read from
+the dedicated RetroArch system subdirectory `BIOS/puae/`. It intentionally
+does not fall back to loose files in `BIOS/`. The build also brings the pinned
+core-info extension list into line with the core's own `valid_extensions` by
+adding its missing `raw` floppy-image entry.
 
 Every lane's previously staged core is removed before its build runs, so a lane
 that produces nothing is reported as `failed`, never as `built`. If a build

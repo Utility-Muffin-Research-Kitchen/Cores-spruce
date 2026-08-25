@@ -26,6 +26,7 @@
     "pcsx_rearmed": {"url": "https://github.com/libretro/pcsx_rearmed.git", "commit": "da2cb8ecd17fd0932ab6d94774c0522beebce6e3", "checkout": "libretro-super/libretro-pcsx_rearmed", "recipe": "generic-libretro-super-v1"},
     "picodrive": {"url": "https://github.com/libretro/picodrive.git", "commit": "733c711a477a642fd2006d5a7a581b2790ec36b4", "checkout": "libretro-super/libretro-picodrive", "recipe": "generic-libretro-super-v1"},
     "prosystem": {"url": "https://github.com/libretro/prosystem-libretro.git", "commit": "8a88014287c7a01cd568067e5a557d0a2b2a051f", "checkout": "libretro-super/libretro-prosystem", "recipe": "generic-libretro-super-v1"},
+    "puae": {"url": "https://github.com/libretro/libretro-uae.git", "commit": "96ebfcfc2c66233ad37f6dc99ee991211dc719ad", "checkout": "libretro-super/libretro-puae", "recipe": "generic-libretro-super-v1+raw-info"},
     "snes9x": {"url": "https://github.com/libretro/snes9x.git", "commit": "890b5d445538fe790aa3add3d5702c80f551e0ae", "checkout": "libretro-super/libretro-snes9x", "recipe": "generic-libretro-super-v1"},
     "stella2014": {"url": "https://github.com/libretro/stella2014-libretro.git", "commit": "4a7da82595d27b8df7af1ecb467a64b642a41bc9", "checkout": "libretro-super/libretro-stella2014", "recipe": "generic-libretro-super-v1"},
     "swanstation": {"url": "https://github.com/libretro/swanstation.git", "commit": "7f69c199ed88d5723f71dd3a6e9c1b7a45b535a6", "checkout": "libretro-super/libretro-swanstation", "recipe": "swanstation-cmake-v1"},
