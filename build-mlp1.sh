@@ -61,6 +61,7 @@ STOCK_PARITY_CORES=(
     picodrive
     prosystem
     puae
+    puae2021
     snes9x
     stella2014
     swanstation
@@ -1380,7 +1381,7 @@ core_tuning_status() {
         np2kai)
             printf 'mlp1-joypad-arrows'
             ;;
-        puae)
+        puae|puae2021)
             printf 'mlp1-bios-subdir'
             ;;
         *)
