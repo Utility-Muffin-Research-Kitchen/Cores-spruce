@@ -1,0 +1,41 @@
+diff --git a/Makefile b/Makefile
+index 7baf14b8..514fcfb6 100644
+--- a/Makefile
++++ b/Makefile
+@@ -31,7 +31,7 @@ endif
+ ifneq (,$(findstring unix,$(platform)))
+    TARGET := $(TARGET_NAME)_libretro.so
+    fpic := -fPIC
+-   LDFLAGS += -lpthread
++   LDFLAGS += -lm -lpthread
+    CFLAGS += -Wstringop-overflow=0 -Wno-unused-result
+    SHARED := -shared -Wl,--version-script=$(CORE_DIR)/libretro/link.T -Wl,--gc-sections
+    ifneq ($(findstring Haiku,$(shell uname -s)),)
+diff --git a/libretro/libretro-core.c b/libretro/libretro-core.c
+index d27ffe25..75a2db3b 100644
+--- a/libretro/libretro-core.c
++++ b/libretro/libretro-core.c
+@@ -699,11 +699,23 @@ static bool is_hdf_rdb(const char *path)
+ static void retro_set_paths(void)
+ {
+    const char *system_dir = NULL;
++   char puae_system_directory[RETRO_PATH_MAX];
+    if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_dir) && system_dir)
+    {
+       strlcpy(retro_system_directory,
+               system_dir,
+               sizeof(retro_system_directory));
++      snprintf(puae_system_directory,
++            sizeof(puae_system_directory),
++            "%s%s%s",
++            retro_system_directory,
++            DIR_SEP_STR,
++            "puae");
++      strlcpy(retro_system_directory,
++            puae_system_directory,
++            sizeof(retro_system_directory));
++      if (!path_is_directory(retro_system_directory))
++         path_mkdir(retro_system_directory);
+    }
+ 
+    const char *content_dir = NULL;
