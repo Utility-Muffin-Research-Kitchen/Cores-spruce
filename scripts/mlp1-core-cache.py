@@ -180,6 +180,19 @@ def input_fingerprint(args: argparse.Namespace, core: str, entry: dict) -> str:
         "ldflags": args.ldflags,
     }
     payload.update(curated_inputs(args, core, entry))
+    if core == "flycast_fast_umrk":
+        # Fast is dispatched in its own qualified container. The generic SDK's
+        # tag, flags and profile must not change this core's cache identity.
+        manifest = load_json(args.profile_dir / core / "manifest.json", "Fast profile")
+        payload.update(
+            toolchain_id=manifest["toolchain"]["image_id"],
+            target_soc="rk3566",
+            target_cpu="cortex-a55",
+            build_profile="release",
+            cflags=manifest["flags"]["common"],
+            cxxflags=manifest["flags"]["common"],
+            ldflags=manifest["flags"]["ldflags_extra"],
+        )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 

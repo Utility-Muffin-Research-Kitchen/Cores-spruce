@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CACHE_TOOL = REPO_ROOT / "scripts" / "mlp1-core-cache.py"
 PROFILE_TOOL = REPO_ROOT / "scripts" / "mlp1-flycast-fast-umrk-profile.py"
 BUILD_SCRIPT = REPO_ROOT / "build-mlp1.sh"
+RECIPE_SCRIPT = REPO_ROOT / "scripts/mlp1-flycast-fast-umrk-recipe.sh"
 LOCK_PATH = REPO_ROOT / "config" / "mlp1-core-lock.json"
 PATCH_PATH = REPO_ROOT / "patches" / "mlp1" / "flycast_fast_umrk.patch"
 INFO_PATH = REPO_ROOT / "info" / "mlp1" / "flycast_fast_umrk_libretro.info"
@@ -81,7 +82,7 @@ def read_text(path: Path) -> str:
 
 
 def build_script() -> str:
-    return read_text(BUILD_SCRIPT)
+    return read_text(BUILD_SCRIPT) + "\n" + read_text(RECIPE_SCRIPT)
 
 
 def manifest() -> dict:
@@ -122,7 +123,7 @@ class LockAndParityTest(unittest.TestCase):
         self.assertEqual(entry["recipe"], "flycast-2022-fast-umrk-pgo-v1")
         self.assertEqual(
             entry["build_recipe"],
-            {"source": "build-mlp1.sh", "function": "build_flycast_fast_umrk_core"},
+            {"source": "scripts/mlp1-flycast-fast-umrk-recipe.sh", "function": "build_flycast_fast_umrk_core"},
         )
         # The standard Flycast pin keeps its own checkout and recipe.
         standard = lock()["cores"]["flycast"]
@@ -366,7 +367,7 @@ def extract_shell_function(name: str) -> str:
 
 def recipe_input_digest() -> str:
     digest = hashlib.sha256()
-    for relative in ("build-mlp1.sh",):
+    for relative in ("scripts/mlp1-flycast-fast-umrk-recipe.sh",):
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update((REPO_ROOT / relative).read_bytes())
@@ -411,7 +412,7 @@ class SourceIdentityTest(unittest.TestCase):
         source = manifest()["source"]
         self.assertEqual(len(source["patched_tree_sha256"]), 64)
         recipe_input = manifest()["recipe_input"]
-        self.assertEqual(recipe_input["file"], "build-mlp1.sh")
+        self.assertEqual(recipe_input["file"], "scripts/mlp1-flycast-fast-umrk-recipe.sh")
         self.assertEqual(recipe_input["sha256"], recipe_input_digest())
         self.assertIn(f'{recipe_input["function"]}() {{', build_script())
 
@@ -478,6 +479,7 @@ class CacheFingerprintTest(unittest.TestCase):
         self.copy("profiles/mlp1/flycast_fast_umrk/manifest.json")
         self.copy("info/mlp1/flycast_fast_umrk_libretro.info")
         self.copy("build-mlp1.sh")
+        self.copy("scripts/mlp1-flycast-fast-umrk-recipe.sh")
         self.cores = sorted(json.loads(read_text(LOCK_PATH))["cores"])
 
     def copy(self, relative: str) -> None:
@@ -529,8 +531,8 @@ class CacheFingerprintTest(unittest.TestCase):
             "info": lambda: (self.root / "info/mlp1/flycast_fast_umrk_libretro.info").write_text(
                 read_text(INFO_PATH) + "\n", encoding="utf-8"
             ),
-            "recipe": lambda: (self.root / "build-mlp1.sh").write_text(
-                read_text(BUILD_SCRIPT) + "\n# recipe edit\n", encoding="utf-8"
+            "recipe": lambda: (self.root / "scripts/mlp1-flycast-fast-umrk-recipe.sh").write_text(
+                read_text(RECIPE_SCRIPT) + "\n# recipe edit\n", encoding="utf-8"
             ),
             "patch": lambda: (self.root / "patches/mlp1/flycast_fast_umrk.patch").write_text(
                 read_text(PATCH_PATH) + "\n# patch edit\n", encoding="utf-8"
@@ -541,6 +543,7 @@ class CacheFingerprintTest(unittest.TestCase):
                 self.copy("profiles/mlp1/flycast_fast_umrk/manifest.json")
                 self.copy("info/mlp1/flycast_fast_umrk_libretro.info")
                 self.copy("build-mlp1.sh")
+                self.copy("scripts/mlp1-flycast-fast-umrk-recipe.sh")
                 self.copy("patches/mlp1/flycast_fast_umrk.patch")
                 mutate()
                 self.assertNotEqual(self.fingerprint("flycast_fast_umrk"), baseline)

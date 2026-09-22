@@ -6,6 +6,13 @@ DEFAULT_TOOLCHAIN_REPO=""
 if [[ -d "$REPO_ROOT/../mlp1-toolchain" ]]; then
     DEFAULT_TOOLCHAIN_REPO="$(cd "$REPO_ROOT/../mlp1-toolchain" && pwd)"
 fi
+# A Git worktree's sibling directory is not necessarily the umbrella workspace.
+if [[ -z "$DEFAULT_TOOLCHAIN_REPO" ]]; then
+    common_dir="$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$common_dir" && -d "$common_dir/../../mlp1-toolchain" ]]; then
+        DEFAULT_TOOLCHAIN_REPO="$(cd "$common_dir/../../mlp1-toolchain" && pwd)"
+    fi
+fi
 DEFAULT_SPRUCE_OS_DIR=""
 if [[ -d "$REPO_ROOT/../spruceOS" ]]; then
     DEFAULT_SPRUCE_OS_DIR="$(cd "$REPO_ROOT/../spruceOS" && pwd)"
@@ -19,6 +26,9 @@ LIBRETRO_SUPER_SRC_DIR="${LIBRETRO_SUPER_SRC_DIR:-$CORES_WORKDIR/src/libretro-su
 LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-https://github.com/libretro/libretro-super.git}"
 LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-b344383eb04aae786d8a9565fe2a61d940a574c0}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/output/mlp1}"
+if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
+    OUTPUT_DIR="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$OUTPUT_DIR")"
+fi
 CORES_OUTPUT_DIR="${CORES_OUTPUT_DIR:-$OUTPUT_DIR/cores}"
 INFO_OUTPUT_DIR="${INFO_OUTPUT_DIR:-$OUTPUT_DIR/info}"
 REPORT_PATH_EXPLICIT="${REPORT_PATH+1}"
@@ -36,25 +46,8 @@ FORCE_REBUILD_CORES="${FORCE_REBUILD_CORES:-0}"
 JOBS="${JOBS:-}"
 MLP1_BUILD_PROFILE="${MLP1_BUILD_PROFILE:-release}"
 
-# FlyCast Fast UMRK: the April 2022 Flycast lane.
-#
-# It builds from the pinned old root Makefile lane instead of the current
-# Flycast CMake lane, and its normal build consumes the frozen PGO dataset that
-# profiles/mlp1/flycast_fast_umrk/manifest.json describes. The generation
-# (maintainer training) and use phases share these canonical container paths
-# and never share an object tree.
-FLYCAST_FAST_UMRK_PGO_DIR="$CORES_WORKDIR/pgo/flycast-fast-umrk"
-FLYCAST_FAST_UMRK_PROFILE_DIR="$REPO_ROOT/profiles/mlp1/flycast_fast_umrk"
-FLYCAST_FAST_UMRK_PATCH="$REPO_ROOT/patches/mlp1/flycast_fast_umrk.patch"
-FLYCAST_FAST_UMRK_INFO_DIR="$REPO_ROOT/info/mlp1"
-FLYCAST_FAST_UMRK_GIT_VERSION=" 4c293f3"
-FLYCAST_FAST_UMRK_COMMON_FLAGS="-flto=auto -ffat-lto-objects -fuse-linker-plugin -fno-plt -fno-semantic-interposition -fvisibility=hidden -fomit-frame-pointer -fno-stack-protector -U_FORTIFY_SOURCE -fno-math-errno -fno-trapping-math"
-FLYCAST_FAST_UMRK_LDFLAGS_EXTRA="-Wl,-O1,--as-needed,--gc-sections,--hash-style=gnu"
-# Space-separated patterns for make's filter-out: the ARM64 dynarec, the SH4
-# block cache, fastmem/VMEM, the ARM7 core and libretro/vmem_utils.o keep their
-# register assumptions intact because gcov instrumentation changes them.
-FLYCAST_FAST_UMRK_NOPROF_FILTER="-fprofile-generate -fprofile-generate=% -pg -fprofile-use -fprofile-use=%"
-
+# shellcheck source=scripts/mlp1-flycast-fast-umrk-recipe.sh
+. "$REPO_ROOT/scripts/mlp1-flycast-fast-umrk-recipe.sh"
 STOCK_PARITY_CORES=(
     mednafen_ngp
     mednafen_pce_fast
@@ -489,12 +482,10 @@ run_host_cache_command() {
         exit 2
     }
     load_host_build_context
-    if [[ -z "$MLP1_TOOLCHAIN_ID" ]]; then
-        MLP1_TOOLCHAIN_ID="$(docker image inspect --format '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null)" || {
-            echo "missing Docker image: $TOOLCHAIN_IMAGE" >&2
-            exit 2
-        }
-    fi
+    MLP1_TOOLCHAIN_ID="$(docker image inspect --format '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null)" || {
+        echo "missing Docker image: $TOOLCHAIN_IMAGE" >&2
+        exit 2
+    }
     set_cache_args
     python3 "$MLP1_CORE_CACHE_TOOL" "$command" "${CACHE_ARGS[@]}" "$@"
 }
@@ -512,93 +503,7 @@ case "${1:-}" in
         ;;
 esac
 
-if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
-    if [[ -z "$TOOLCHAIN_REPO" ]]; then
-        echo "TOOLCHAIN_REPO is required when ../mlp1-toolchain is not present." >&2
-        exit 1
-    fi
-    if ! docker image inspect "$TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
-        echo "missing Docker image: $TOOLCHAIN_IMAGE" >&2
-        echo "build it with: make -C $TOOLCHAIN_REPO image" >&2
-        exit 1
-    fi
-
-    if [[ -z "$MLP1_TOOLCHAIN_ID" ]]; then
-        MLP1_TOOLCHAIN_ID="$(docker image inspect --format '{{.Id}}' "$TOOLCHAIN_IMAGE")"
-    fi
-    container_report_path="/workspace/output/mlp1/build-report.txt"
-    container_report_json_path="/workspace/output/mlp1/build-report.json"
-    if [[ -z "$REPORT_PATH_EXPLICIT" && -z "$REPORT_JSON_PATH_EXPLICIT" ]]; then
-        aggregate=0
-        for arg in "$@"; do
-            case "$arg" in
-                --stock-parity|--spruce-all|--spruce-installed|--spruce-buildable)
-                    aggregate=1
-                    ;;
-            esac
-        done
-        if [[ "$aggregate" == "0" ]]; then
-            container_report_path="/workspace/output/mlp1/targeted-build-report.txt"
-            container_report_json_path="/workspace/output/mlp1/targeted-build-report.json"
-        fi
-    fi
-
-    docker_args=(
-        --rm
-        -e IN_MLP1_CONTAINER=1
-        -e LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-}"
-        -e LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-}"
-        -e CORES_WORKDIR=/workspace/workdir
-        -e LIBRETRO_SUPER_SRC_DIR=/workspace/workdir/src/libretro-super
-        -e OUTPUT_DIR=/workspace/output/mlp1
-        -e CORES_OUTPUT_DIR=/workspace/output/mlp1/cores
-        -e INFO_OUTPUT_DIR=/workspace/output/mlp1/info
-        -e REPORT_PATH="$container_report_path"
-        -e REPORT_JSON_PATH="$container_report_json_path"
-        -e MLP1_CORE_LOCK=/workspace/config/mlp1-core-lock.json
-        -e MLP1_CORE_CACHE=/workspace/output/mlp1/core-cache.json
-        -e MLP1_CORE_CACHE_TOOL=/workspace/scripts/mlp1-core-cache.py
-        -e MLP1_TOOLCHAIN_ID="$MLP1_TOOLCHAIN_ID"
-        -e FORCE_REBUILD_CORES="$FORCE_REBUILD_CORES"
-        -e CORE_INFO_PROBE_PATH=/workspace/output/mlp1/tools/mlp1-core-info-probe
-        -e CORE_INFO_PROBE_LIBRARY_DIR=/workspace/output/mlp1/tools/lib
-        -e JOBS="${JOBS:-}"
-        -e MLP1_BUILD_PROFILE="$MLP1_BUILD_PROFILE"
-        -v "$REPO_ROOT":/workspace
-        -v "$TOOLCHAIN_REPO":/mlp1-toolchain:ro
-        -w /workspace
-    )
-
-    if [[ -d "$SPRUCE_OS_DIR" ]]; then
-        docker_args+=(-e SPRUCE_OS_DIR=/spruceOS -v "$SPRUCE_OS_DIR":/spruceOS:ro)
-    else
-        docker_args+=(-e SPRUCE_OS_DIR="$SPRUCE_OS_DIR")
-    fi
-
-    docker run "${docker_args[@]}" "$TOOLCHAIN_IMAGE" /workspace/build-mlp1.sh "$@"
-    exit $?
-fi
-
-JOBS="${JOBS:-$(nproc)}"
-
-if [[ -f /opt/mlp1-toolchain/umrk/mlp1-build-flags.env ]]; then
-    . /opt/mlp1-toolchain/umrk/mlp1-build-flags.env
-elif [[ -f /mlp1-toolchain/flags/mlp1-build-flags.env ]]; then
-    . /mlp1-toolchain/flags/mlp1-build-flags.env
-else
-    UMRK_MLP1_TARGET_SOC="rk3566"
-    UMRK_MLP1_TARGET_CPU="cortex-a55"
-    UMRK_MLP1_PROFILE_CFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
-    UMRK_MLP1_PROFILE_CXXFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
-    UMRK_MLP1_PROFILE_LDFLAGS="-Wl,--gc-sections"
-fi
-
-if [[ "$FORCE_REBUILD_CORES" != "0" && "$FORCE_REBUILD_CORES" != "1" ]]; then
-    echo "FORCE_REBUILD_CORES must be 0 or 1" >&2
-    exit 2
-fi
-set_cache_args
-
+BUILD_ARGS=("$@")
 declare -a requested_cores=()
 declare -a deferred_cores=()
 build_mode=explicit
@@ -689,6 +594,146 @@ case "$build_mode" in
         fi
         ;;
 esac
+
+
+if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
+    MLP1_FAST_BUILD_ACTION=""
+    has_fast=0
+    has_other=0
+    for core in "${requested_cores[@]}"; do
+        if [[ "$core" == "flycast_fast_umrk" ]]; then has_fast=1; else has_other=1; fi
+    done
+    if [[ "$has_fast" == "1" ]]; then
+        fast_toolchain="$(python3 "$MLP1_PROFILE_TOOL" toolchain --profile-dir "$FLYCAST_FAST_UMRK_PROFILE_DIR")"
+        IFS=$'\t' read -r fast_image fast_id <<<"$fast_toolchain"
+        python3 "$MLP1_PROFILE_TOOL" check \
+            --profile-dir "$FLYCAST_FAST_UMRK_PROFILE_DIR" --lock "$MLP1_CORE_LOCK" \
+            --patch "$FLYCAST_FAST_UMRK_PATCH" --toolchain-id "$fast_id"
+        if [[ "$has_other" == "0" ]]; then
+            MLP1_BUILD_PROFILE=release
+            # TOOLCHAIN_IMAGE remains the generic-core override. Fast always
+            # uses its qualified image, including the training entry point.
+            TOOLCHAIN_IMAGE="$fast_image"
+            if ! docker image inspect "$TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+                docker pull "$TOOLCHAIN_IMAGE"
+            fi
+            actual_id="$(docker image inspect --format '{{.Id}}' "$TOOLCHAIN_IMAGE")"
+            if [[ "$actual_id" != "$fast_id" ]]; then
+                echo "Fast toolchain identity mismatch: expected $fast_id, found $actual_id" >&2
+                exit 1
+            fi
+            MLP1_TOOLCHAIN_ID="$actual_id"
+        else
+            # Docker stays on the host. The generic container consumes this
+            # verified cache row instead of compiling Fast with another SDK.
+            fast_report="$OUTPUT_DIR/fast-toolchain-report.json"
+            MLP1_FAST_REUSE="$([[ "$build_mode" == stock-parity ]] && echo 1 || echo 0)" \
+                REPORT_PATH="$OUTPUT_DIR/fast-toolchain-report.txt" \
+                REPORT_JSON_PATH="$fast_report" \
+                "$REPO_ROOT/build-mlp1.sh" flycast_fast_umrk
+            MLP1_FAST_BUILD_ACTION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cores"][0]["build_action"])' "$fast_report")"
+        fi
+    fi
+    if [[ -z "$TOOLCHAIN_REPO" ]]; then
+        echo "TOOLCHAIN_REPO is required when ../mlp1-toolchain is not present." >&2
+        exit 1
+    fi
+    if ! docker image inspect "$TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+        echo "missing Docker image: $TOOLCHAIN_IMAGE" >&2
+        echo "build it with: make -C $TOOLCHAIN_REPO image" >&2
+        exit 1
+    fi
+
+    # Never accept a caller-supplied identity for the container being launched.
+    MLP1_TOOLCHAIN_ID="$(docker image inspect --format '{{.Id}}' "$TOOLCHAIN_IMAGE")"
+    container_report_path="/workspace/output/mlp1/build-report.txt"
+    container_report_json_path="/workspace/output/mlp1/build-report.json"
+    if [[ -z "$REPORT_PATH_EXPLICIT" && -z "$REPORT_JSON_PATH_EXPLICIT" ]]; then
+        aggregate=0
+        for arg in "${BUILD_ARGS[@]}"; do
+            case "$arg" in
+                --stock-parity|--spruce-all|--spruce-installed|--spruce-buildable)
+                    aggregate=1
+                    ;;
+            esac
+        done
+        if [[ "$aggregate" == "0" ]]; then
+            container_report_path="/workspace/output/mlp1/targeted-build-report.txt"
+            container_report_json_path="/workspace/output/mlp1/targeted-build-report.json"
+        fi
+    else
+        # Explicit reports must stay within the mounted output directory.
+        REPORT_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$REPORT_PATH")"
+        REPORT_JSON_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$REPORT_JSON_PATH")"
+        case "$REPORT_PATH" in
+            "$OUTPUT_DIR"/*) container_report_path="/workspace/output/mlp1/${REPORT_PATH#"$OUTPUT_DIR"/}" ;;
+            *) echo "REPORT_PATH must be under OUTPUT_DIR" >&2; exit 2 ;;
+        esac
+        case "$REPORT_JSON_PATH" in
+            "$OUTPUT_DIR"/*) container_report_json_path="/workspace/output/mlp1/${REPORT_JSON_PATH#"$OUTPUT_DIR"/}" ;;
+            *) echo "REPORT_JSON_PATH must be under OUTPUT_DIR" >&2; exit 2 ;;
+        esac
+    fi
+
+    docker_args=(
+        --rm
+        -e IN_MLP1_CONTAINER=1
+        -e LIBRETRO_SUPER_URL="${LIBRETRO_SUPER_URL:-}"
+        -e LIBRETRO_SUPER_REF="${LIBRETRO_SUPER_REF:-}"
+        -e CORES_WORKDIR=/workspace/workdir
+        -e LIBRETRO_SUPER_SRC_DIR=/workspace/workdir/src/libretro-super
+        -e OUTPUT_DIR=/workspace/output/mlp1
+        -e CORES_OUTPUT_DIR=/workspace/output/mlp1/cores
+        -e INFO_OUTPUT_DIR=/workspace/output/mlp1/info
+        -e REPORT_PATH="$container_report_path"
+        -e REPORT_JSON_PATH="$container_report_json_path"
+        -e MLP1_CORE_LOCK=/workspace/config/mlp1-core-lock.json
+        -e MLP1_CORE_CACHE=/workspace/output/mlp1/core-cache.json
+        -e MLP1_CORE_CACHE_TOOL=/workspace/scripts/mlp1-core-cache.py
+        -e MLP1_TOOLCHAIN_ID="$MLP1_TOOLCHAIN_ID"
+        -e MLP1_FAST_BUILD_ACTION="${MLP1_FAST_BUILD_ACTION:-}"
+        -e MLP1_FAST_REUSE="${MLP1_FAST_REUSE:-0}"
+        -e FORCE_REBUILD_CORES="$FORCE_REBUILD_CORES"
+        -e CORE_INFO_PROBE_PATH=/workspace/output/mlp1/tools/mlp1-core-info-probe
+        -e CORE_INFO_PROBE_LIBRARY_DIR=/workspace/output/mlp1/tools/lib
+        -e JOBS="${JOBS:-}"
+        -e MLP1_BUILD_PROFILE="$MLP1_BUILD_PROFILE"
+        -v "$REPO_ROOT":/workspace
+        -v "$OUTPUT_DIR":/workspace/output/mlp1
+        -v "$TOOLCHAIN_REPO":/mlp1-toolchain:ro
+        -w /workspace
+    )
+
+    if [[ -d "$SPRUCE_OS_DIR" ]]; then
+        docker_args+=(-e SPRUCE_OS_DIR=/spruceOS -v "$SPRUCE_OS_DIR":/spruceOS:ro)
+    else
+        docker_args+=(-e SPRUCE_OS_DIR="$SPRUCE_OS_DIR")
+    fi
+
+    mkdir -p "$OUTPUT_DIR"
+    docker run "${docker_args[@]}" "$TOOLCHAIN_IMAGE" /workspace/build-mlp1.sh "${BUILD_ARGS[@]}"
+    exit $?
+fi
+
+JOBS="${JOBS:-$(nproc)}"
+
+if [[ -f /opt/mlp1-toolchain/umrk/mlp1-build-flags.env ]]; then
+    . /opt/mlp1-toolchain/umrk/mlp1-build-flags.env
+elif [[ -f /mlp1-toolchain/flags/mlp1-build-flags.env ]]; then
+    . /mlp1-toolchain/flags/mlp1-build-flags.env
+else
+    UMRK_MLP1_TARGET_SOC="rk3566"
+    UMRK_MLP1_TARGET_CPU="cortex-a55"
+    UMRK_MLP1_PROFILE_CFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
+    UMRK_MLP1_PROFILE_CXXFLAGS="-O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG"
+    UMRK_MLP1_PROFILE_LDFLAGS="-Wl,--gc-sections"
+fi
+
+if [[ "$FORCE_REBUILD_CORES" != "0" && "$FORCE_REBUILD_CORES" != "1" ]]; then
+    echo "FORCE_REBUILD_CORES must be 0 or 1" >&2
+    exit 2
+fi
+set_cache_args
 
 "$REPO_ROOT/fetch-libretro-super.sh"
 LIBRETRO_SUPER_RESOLVED_URL="$(git -C "$LIBRETRO_SUPER_SRC_DIR" remote get-url origin)"
@@ -1229,255 +1274,6 @@ build_flycast_core() {
     )
 }
 
-# FlyCast Fast UMRK: the April 2022 Flycast lane.
-#
-# Phase "use" builds the shipped core from the frozen PGO dataset; phase
-# "generate" builds the instrumented training core. Both phases run the same
-# recipe so the object paths baked into GCC's mangled .gcda names stay
-# identical, and the object tree is cleaned between them.
-flycast_fast_umrk_profile_flags() {
-    case "$1" in
-        use)
-            printf '%s' "-fprofile-use=$FLYCAST_FAST_UMRK_PGO_DIR -fprofile-correction -fprofile-partial-training"
-            ;;
-        generate)
-            printf '%s' "-fprofile-generate=$FLYCAST_FAST_UMRK_PGO_DIR"
-            ;;
-        *)
-            echo "unknown flycast_fast_umrk phase: $1" >&2
-            return 1
-            ;;
-    esac
-}
-
-# Prove from the captured compile commands that the renderer was profiled,
-# that the whole build used the requested phase, and that the assembly
-# sensitive units were left out of the instrumentation.
-flycast_fast_umrk_audit_compile_log() {
-    local phase="$1"
-    local compile_log="$2"
-    local active_flag="-fprofile-use=$FLYCAST_FAST_UMRK_PGO_DIR"
-    local inactive_token="-fprofile-generate"
-    if [[ "$phase" == "generate" ]]; then
-        active_flag="-fprofile-generate=$FLYCAST_FAST_UMRK_PGO_DIR"
-        inactive_token="-fprofile-use"
-    fi
-
-    verify_a55_compile_log flycast_fast_umrk "$compile_log" || return 1
-
-    if grep -q -- "-fopenmp" "$compile_log"; then
-        echo "flycast_fast_umrk compile commands enable OpenMP" >&2
-        return 1
-    fi
-
-    # The excluded C/C++ units keep the flags make filtered out of them, so the
-    # contract is "every non-excluded C/C++ compile carries the phase flag, and
-    # no excluded C/C++ compile carries either phase flag". Hand-written
-    # assembly (.S) is counted separately: the driver leaves the phase flag on
-    # that command line because ASFLAGS expands CFLAGS, but gcov never
-    # instruments assembly, so the register pressure the exclusions protect
-    # against cannot appear there.
-    local audit compile_count active_count missing_active excluded_profiled
-    local excluded_count inactive_count renderer_count asm_count asm_profiled
-    audit="$(awk -v active="$active_flag" -v inactive="$inactive_token" '
-        BEGIN {
-            n = split("core/rec-ARM64/ core/hw/sh4/dyna/ core/hw/mem/ core/hw/arm7/ core/libretro/vmem_utils.o", patterns, " ")
-        }
-        /(^|\/)aarch64-buildroot-linux-gnu-(gcc|g\+\+) / && /(^| )-c( |$)/ && / -o [^ ]*\.o( |$)/ {
-            compile++
-            profiled = index($0, active) > 0
-            if ($0 ~ /\.(S|s) -o /) {
-                asm_count++
-                if (profiled)
-                    asm_profiled++
-                next
-            }
-            is_excluded = 0
-            for (i = 1; i <= n; i++)
-                if (index($0, patterns[i]) > 0)
-                    is_excluded = 1
-            if (is_excluded) {
-                excluded++
-                if (profiled || index($0, inactive) > 0 || index($0, " -pg ") > 0)
-                    excluded_profiled++
-            } else {
-                if (profiled)
-                    active_count++
-                else
-                    missing_active++
-                if (index($0, inactive) > 0 || index($0, " -pg ") > 0)
-                    inactive_count++
-            }
-            if (profiled && index($0, "core/rend/gles/gles.cpp") > 0)
-                renderer_count++
-        }
-        END {
-            print compile + 0, active_count + 0, missing_active + 0, excluded_profiled + 0,
-                excluded + 0, inactive_count + 0, renderer_count + 0, asm_count + 0, asm_profiled + 0
-        }
-    ' "$compile_log")"
-    read -r compile_count active_count missing_active excluded_profiled \
-        excluded_count inactive_count renderer_count asm_count asm_profiled <<<"$audit"
-
-    if [[ "$compile_count" -le 0 ]]; then
-        echo "flycast_fast_umrk captured no compile commands in $compile_log" >&2
-        return 1
-    fi
-    if [[ "$missing_active" -ne 0 ]]; then
-        echo "flycast_fast_umrk left $missing_active/$compile_count non-excluded compile commands without $active_flag" >&2
-        return 1
-    fi
-    if [[ "$inactive_count" -ne 0 ]]; then
-        echo "flycast_fast_umrk $phase build contains the other PGO phase's instrumentation in $inactive_count commands" >&2
-        return 1
-    fi
-    if [[ "$excluded_count" -le 0 ]]; then
-        echo "flycast_fast_umrk excluded no assembly-sensitive units from $phase" >&2
-        return 1
-    fi
-    if [[ "$excluded_profiled" -ne 0 ]]; then
-        echo "flycast_fast_umrk instrumented $excluded_profiled/$excluded_count assembly-sensitive excluded units" >&2
-        return 1
-    fi
-    if [[ "$renderer_count" -le 0 ]]; then
-        echo "flycast_fast_umrk renderer profiling is missing: core/rend/gles/gles.cpp was not compiled with $active_flag" >&2
-        return 1
-    fi
-    if [[ "$asm_count" -le 0 ]]; then
-        echo "flycast_fast_umrk captured no assembly compiles, so the dynarec build is not proven" >&2
-        return 1
-    fi
-
-    if [[ "$phase" == "use" ]]; then
-        # Missing-profile noise for units training never reached is expected and
-        # is left visible in the log. Missing or mismatched *renderer* profile
-        # data is not: the whole point of the dataset is those units.
-        local renderer_gap
-        renderer_gap="$(grep -Ei "missing|mismatch|not found|corrupt" "$compile_log" \
-            | grep -E "#core#rend#|core/rend/" || true)"
-        if [[ -n "$renderer_gap" ]]; then
-            echo "flycast_fast_umrk consumed incomplete renderer profile data:" >&2
-            printf '%s\n' "$renderer_gap" | head -n 5 >&2
-            return 1
-        fi
-    fi
-}
-
-flycast_fast_umrk_verify_binary() {
-    local core_path="$1"
-    local readelf_bin="${READELF:-aarch64-buildroot-linux-gnu-readelf}"
-
-    if "$readelf_bin" -d "$core_path" 2>/dev/null | grep -q "libgcov"; then
-        echo "flycast_fast_umrk links the gcov runtime: $core_path" >&2
-        return 1
-    fi
-    if "$readelf_bin" --dyn-syms "$core_path" 2>/dev/null | grep -q "__gcov_"; then
-        echo "flycast_fast_umrk exports gcov instrumentation symbols: $core_path" >&2
-        return 1
-    fi
-    if "$readelf_bin" -s "$core_path" 2>/dev/null | grep -q "__gcov_"; then
-        echo "flycast_fast_umrk retains gcov instrumentation symbols: $core_path" >&2
-        return 1
-    fi
-}
-
-# Shared PGO build for both phases. "use" requires the frozen dataset; the
-# maintainer-only "generate" phase produces the instrumented training core.
-flycast_fast_umrk_build() {
-    local phase="$1"
-    local dest_dir="$2"
-    local dest_name="$3"
-    local src_dir="$CORES_WORKDIR/src/flycast-fast-umrk"
-    local pgo_dir="$FLYCAST_FAST_UMRK_PGO_DIR"
-    local compile_log="$OUTPUT_DIR/logs/flycast_fast_umrk-$phase-compile.log"
-    local make_bin profile_flags
-    make_bin="$(make_tool)"
-    profile_flags="$(flycast_fast_umrk_profile_flags "$phase")" || return 1
-
-    prepare_locked_core flycast_fast_umrk || return 1
-    apply_mlp1_core_patch flycast_fast_umrk "$src_dir" || return 1
-    mkdir -p "$(dirname "$compile_log")" "$dest_dir"
-
-    rm -rf "$pgo_dir"
-    if [[ "$phase" == "use" ]]; then
-        # The dataset is verified against the lock, managed patch, toolchain
-        # and canonical paths before a single object file is produced.
-        python3 "$MLP1_PROFILE_TOOL" extract \
-            --profile-dir "$FLYCAST_FAST_UMRK_PROFILE_DIR" \
-            --lock "$MLP1_CORE_LOCK" \
-            --patch "$FLYCAST_FAST_UMRK_PATCH" \
-            --toolchain-id "$MLP1_TOOLCHAIN_ID" \
-            --canonical-source-dir "$src_dir" \
-            --canonical-profile-dir "$pgo_dir" \
-            --source-dir "$src_dir" \
-            --dest "$pgo_dir" || return 1
-    else
-        # Refuse a training build against the wrong patch, toolchain or
-        # canonical path: its counters could never be consumed.
-        python3 "$MLP1_PROFILE_TOOL" check \
-            --profile-dir "$FLYCAST_FAST_UMRK_PROFILE_DIR" \
-            --lock "$MLP1_CORE_LOCK" \
-            --patch "$FLYCAST_FAST_UMRK_PATCH" \
-            --toolchain-id "$MLP1_TOOLCHAIN_ID" \
-            --canonical-source-dir "$src_dir" \
-            --canonical-profile-dir "$pgo_dir" \
-            --source-dir "$src_dir" || return 1
-        mkdir -p "$pgo_dir"
-    fi
-
-    (
-        cd "$src_dir" || exit 1
-        # Generation and use never share an object tree.
-        "$make_bin" platform=mlp1 clean >/dev/null 2>&1 || true
-        "$make_bin" -j"$JOBS" platform=mlp1 \
-            WITH_DYNAREC=arm64 HAVE_GENERIC_JIT=0 FORCE_GLES=1 DEBUG=0 V=1 MFLAGS= \
-            GIT_VERSION="$FLYCAST_FAST_UMRK_GIT_VERSION" \
-            MLP1_OPT=-O2 MLP1_TUNE="-mcpu=cortex-a55 -mtune=cortex-a55" \
-            MLP1_EXTRA_CFLAGS="$FLYCAST_FAST_UMRK_COMMON_FLAGS $profile_flags" \
-            MLP1_EXTRA_LDFLAGS="$FLYCAST_FAST_UMRK_COMMON_FLAGS $profile_flags $FLYCAST_FAST_UMRK_LDFLAGS_EXTRA" \
-            NOPROF_FILTER="$FLYCAST_FAST_UMRK_NOPROF_FILTER" \
-            AR="$(cross_prefix)-gcc-ar" \
-            NM="$(cross_prefix)-gcc-nm" \
-            2>&1 | tee "$compile_log" || exit 1
-        flycast_fast_umrk_audit_compile_log "$phase" "$compile_log" || exit 1
-        "$(cross_prefix)-strip" -s flycast_libretro.so || exit 1
-        flycast_fast_umrk_verify_binary flycast_libretro.so || exit 1
-        cp -f flycast_libretro.so "$dest_dir/$dest_name" || exit 1
-    ) || return 1
-}
-
-build_flycast_fast_umrk_core() {
-    flycast_fast_umrk_build use "$CORES_OUTPUT_DIR" "flycast_fast_umrk_libretro.so" || return 1
-    CURRENT_CORE_TUNING="a55-pgo-contract"
-}
-
-build_flycast_fast_umrk_profile_gen() {
-    local dest_dir="$OUTPUT_DIR/profile-gen"
-    local gen_core="$dest_dir/flycast_fast_umrk_gen_libretro.so"
-    local gen_log="$OUTPUT_DIR/logs/flycast_fast_umrk-generate-compile.log"
-
-    flycast_fast_umrk_build generate "$dest_dir" "flycast_fast_umrk_gen_libretro.so" || return 1
-
-    {
-        printf 'profile-gen core %s\n' "$gen_core"
-        printf 'profile-gen sha256 %s\n' "$(core_sha256 "$gen_core")"
-        printf 'profile-gen compile log %s\n' "$gen_log"
-    } >>"$REPORT_PATH"
-    echo
-    echo "PGO generation core staged: $gen_core"
-    echo "Train on the device, pull the .gcda tree, then freeze the dataset:"
-    echo "  python3 $MLP1_PROFILE_TOOL freeze \\"
-    echo "      --profile-dir $FLYCAST_FAST_UMRK_PROFILE_DIR \\"
-    echo "      --lock $MLP1_CORE_LOCK --patch $FLYCAST_FAST_UMRK_PATCH \\"
-    echo "      --toolchain-id $MLP1_TOOLCHAIN_ID \\"
-    echo "      --canonical-source-dir $CORES_WORKDIR/src/flycast-fast-umrk \\"
-    echo "      --canonical-profile-dir $FLYCAST_FAST_UMRK_PGO_DIR \\"
-    echo "      --gcda-dir <pulled .gcda tree> --options-file <FlyCast Fast UMRK.opt> \\"
-    echo "      --game crazy-taxi --game sa2 --seconds-per-game 90 \\"
-    echo "      --generation-core-sha256 $(core_sha256 "$gen_core") \\"
-    echo "      --device <adb serial> --qualification '<record>'"
-}
-
 build_mame_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-mame"
     local make_bin
@@ -1715,6 +1511,9 @@ reuse_cached_core() {
     IFS="$REPORT_SEP" read -r core status core_file info_file reason machine \
         max_glibc tuning source_url source_commit build_lane sha256 library_name \
         build_action input_fingerprint <<<"$cached_row"
+    if [[ "$core" == flycast_fast_umrk && -n "${MLP1_FAST_BUILD_ACTION:-}" ]]; then
+        build_action="$MLP1_FAST_BUILD_ACTION"
+    fi
     printf 'reused %s %s\n' "$core" "$core_file" >>"$REPORT_PATH"
     echo "=== Reusing $core for MLP1 ==="
     report_add_row "$core" "$status" "$core_file" "$info_file" "$reason" \
@@ -1806,7 +1605,15 @@ if ! build_core_info_probe; then
     exit 1
 fi
 for core in "${requested_cores[@]}"; do
-    if [[ "$build_mode" == "stock-parity" && "$FORCE_REBUILD_CORES" == "0" ]] \
+    if [[ "$core" == flycast_fast_umrk && -n "${MLP1_FAST_BUILD_ACTION:-}" ]]; then
+        if ! reuse_cached_core "$core"; then
+            echo "Fast result from its pinned container is missing or stale" >&2
+            report_add_row "$core" failed "" "" "pinned-container cache miss"
+            failed_cores+=("$core")
+        fi
+        continue
+    fi
+    if [[ ( "$build_mode" == "stock-parity" || ( "$core" == flycast_fast_umrk && "${MLP1_FAST_REUSE:-0}" == 1 ) ) && "$FORCE_REBUILD_CORES" == "0" ]] \
         && reuse_cached_core "$core"; then
         continue
     fi

@@ -4,7 +4,7 @@ SHELL := /bin/bash
 
 check: check-report check-probe
 	@bash -n build-mlp1.sh probe-mlp1-cores-adb.sh \
-		scripts/stage-mlp1-probe-libs.sh
+		scripts/stage-mlp1-probe-libs.sh scripts/mlp1-flycast-fast-umrk-recipe.sh
 
 check-report:
 	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
