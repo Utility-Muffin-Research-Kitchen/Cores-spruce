@@ -43,6 +43,7 @@ MLP1_CORE_CACHE_TOOL="${MLP1_CORE_CACHE_TOOL:-$REPO_ROOT/scripts/mlp1-core-cache
 MLP1_PROFILE_TOOL="${MLP1_PROFILE_TOOL:-$REPO_ROOT/scripts/mlp1-flycast-fast-umrk-profile.py}"
 MLP1_TOOLCHAIN_ID="${MLP1_TOOLCHAIN_ID:-}"
 FORCE_REBUILD_CORES="${FORCE_REBUILD_CORES:-0}"
+MLP1_CACHE_ONLY="${MLP1_CACHE_ONLY:-0}"
 JOBS="${JOBS:-}"
 MLP1_BUILD_PROFILE="${MLP1_BUILD_PROFILE:-release}"
 
@@ -301,6 +302,7 @@ usage() {
 Usage:
   ./build-mlp1.sh [core ...]
   ./build-mlp1.sh --stock-parity
+  MLP1_CACHE_ONLY=1 ./build-mlp1.sh --stock-parity
   ./build-mlp1.sh --check-stock-parity-cache
   ./build-mlp1.sh --adopt-stock-parity-cache --reference-zip ZIP --reference-sha256 SHA256
   ./build-mlp1.sh --flycast-fast-umrk-profile-gen
@@ -312,6 +314,8 @@ Usage:
   ./build-mlp1.sh --list-spruce-deferred
 
 Default with no core arguments builds genesis_plus_gx for the first MLP1 slice.
+MLP1_CACHE_ONLY checks all stock-parity cache entries before running a container,
+then writes a reused-only report without fetching sources or changing the cache.
 Outputs:
   $CORES_OUTPUT_DIR
   $INFO_OUTPUT_DIR
@@ -564,6 +568,17 @@ if [[ "$build_mode" != "explicit" && ${#requested_cores[@]} -gt 0 ]]; then
     exit 1
 fi
 
+case "$MLP1_CACHE_ONLY" in
+    0) ;;
+    1)
+        [[ "$build_mode" == stock-parity && "$FORCE_REBUILD_CORES" == 0 ]] || {
+            echo "MLP1_CACHE_ONLY=1 requires --stock-parity and FORCE_REBUILD_CORES=0" >&2
+            exit 2
+        }
+        ;;
+    *) echo "MLP1_CACHE_ONLY must be 0 or 1" >&2; exit 2 ;;
+esac
+
 case "$build_mode" in
     stock-parity)
         requested_cores=("${STOCK_PARITY_CORES[@]}")
@@ -597,13 +612,16 @@ esac
 
 
 if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
+    if [[ "$MLP1_CACHE_ONLY" == 1 ]]; then
+        run_host_cache_command check
+    fi
     MLP1_FAST_BUILD_ACTION=""
     has_fast=0
     has_other=0
     for core in ${requested_cores[@]+"${requested_cores[@]}"}; do
         if [[ "$core" == "flycast_fast_umrk" ]]; then has_fast=1; else has_other=1; fi
     done
-    if [[ "$has_fast" == "1" ]]; then
+    if [[ "$has_fast" == "1" && "$MLP1_CACHE_ONLY" == 0 ]]; then
         fast_toolchain="$(python3 "$MLP1_PROFILE_TOOL" toolchain --profile-dir "$FLYCAST_FAST_UMRK_PROFILE_DIR")"
         IFS=$'\t' read -r fast_image fast_id <<<"$fast_toolchain"
         python3 "$MLP1_PROFILE_TOOL" check \
@@ -694,6 +712,7 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
         -e MLP1_FAST_BUILD_ACTION="${MLP1_FAST_BUILD_ACTION:-}"
         -e MLP1_FAST_REUSE="${MLP1_FAST_REUSE:-0}"
         -e FORCE_REBUILD_CORES="$FORCE_REBUILD_CORES"
+        -e MLP1_CACHE_ONLY="$MLP1_CACHE_ONLY"
         -e CORE_INFO_PROBE_PATH=/workspace/output/mlp1/tools/mlp1-core-info-probe
         -e CORE_INFO_PROBE_LIBRARY_DIR=/workspace/output/mlp1/tools/lib
         -e JOBS="${JOBS:-}"
@@ -735,9 +754,18 @@ if [[ "$FORCE_REBUILD_CORES" != "0" && "$FORCE_REBUILD_CORES" != "1" ]]; then
 fi
 set_cache_args
 
-"$REPO_ROOT/fetch-libretro-super.sh"
-LIBRETRO_SUPER_RESOLVED_URL="$(git -C "$LIBRETRO_SUPER_SRC_DIR" remote get-url origin)"
-LIBRETRO_SUPER_RESOLVED_COMMIT="$(git -C "$LIBRETRO_SUPER_SRC_DIR" rev-parse HEAD)"
+if [[ "$MLP1_CACHE_ONLY" == 1 ]]; then
+    [[ "$LIBRETRO_SUPER_REF" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "cache-only report requires a pinned libretro-super commit" >&2
+        exit 2
+    }
+    LIBRETRO_SUPER_RESOLVED_URL="$LIBRETRO_SUPER_URL"
+    LIBRETRO_SUPER_RESOLVED_COMMIT="$LIBRETRO_SUPER_REF"
+else
+    "$REPO_ROOT/fetch-libretro-super.sh"
+    LIBRETRO_SUPER_RESOLVED_URL="$(git -C "$LIBRETRO_SUPER_SRC_DIR" remote get-url origin)"
+    LIBRETRO_SUPER_RESOLVED_COMMIT="$(git -C "$LIBRETRO_SUPER_SRC_DIR" rev-parse HEAD)"
+fi
 
 mkdir -p "$CORES_OUTPUT_DIR" "$INFO_OUTPUT_DIR" "$(dirname "$REPORT_PATH")"
 : >"$REPORT_PATH"
@@ -1608,6 +1636,13 @@ if ! build_core_info_probe; then
     exit 1
 fi
 for core in ${requested_cores[@]+"${requested_cores[@]}"}; do
+    if [[ "$MLP1_CACHE_ONLY" == 1 ]]; then
+        reuse_cached_core "$core" || {
+            echo "cache-only stock-parity report stopped at stale core: $core" >&2
+            exit 1
+        }
+        continue
+    fi
     if [[ "$core" == flycast_fast_umrk && -n "${MLP1_FAST_BUILD_ACTION:-}" ]]; then
         if ! reuse_cached_core "$core"; then
             echo "Fast result from its pinned container is missing or stale" >&2
@@ -1640,7 +1675,7 @@ echo
 echo "=== MLP1 core build report ==="
 cat "$REPORT_PATH"
 write_json_report "${#failed_cores[@]}" "${#deferred_cores[@]}"
-if [[ "$build_mode" != "flycast-profile-gen" ]]; then
+if [[ "$build_mode" != "flycast-profile-gen" && "$MLP1_CACHE_ONLY" != 1 ]]; then
     python3 "$MLP1_CORE_CACHE_TOOL" update "${CACHE_ARGS[@]}" \
         --report "$REPORT_JSON_PATH"
     echo "JSON report: $REPORT_JSON_PATH"
