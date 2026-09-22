@@ -25,10 +25,10 @@ reports it as a cache miss until training has been frozen.
   checkout with the managed patch applied. Untracked non-ignored files are
   rejected, so the identity cannot drift silently. Recompute it with
   `python3 scripts/mlp1-flycast-fast-umrk-profile.py tree-identity --source-dir <checkout>`.
-- Recipe input: SHA-256 over `build-mlp1.sh`, the file that owns the
-  generation and use flags. Editing the builder invalidates the contract on
-  purpose; re-record it and retrain only when the applied source or the
-  effective flags actually changed.
+- Recipe input: SHA-256 over `scripts/mlp1-flycast-fast-umrk-recipe.sh`, which
+  owns the generation/use recipe and flags. Editing this recipe invalidates
+  the contract; unrelated shared-builder edits don't. Re-record the contract
+  and retrain when the applied source or effective flags change.
 - Toolchain: the retrievable OCI digest
   `sha256:66aac16fb8b07e663c9b4d66970f272df195a6eba98dfad8286eabbaa617faf9`
   (`aarch64-buildroot-linux-gnu-gcc` 12.3.0). The 2026-09-22 experiment used a
@@ -59,7 +59,6 @@ reports it as a cache miss until training has been frozen.
 
    ```sh
    TOOLCHAIN_REPO=/path/to/mlp1-toolchain \
-   TOOLCHAIN_IMAGE='ghcr.io/utility-muffin-research-kitchen/mlp1-toolchain@sha256:66aac16fb8b07e663c9b4d66970f272df195a6eba98dfad8286eabbaa617faf9' \
    ./build-mlp1.sh --flycast-fast-umrk-profile-gen
    ```
 
@@ -112,6 +111,13 @@ reports it as a cache miss until training has been frozen.
    without the required renderer profiles.
 
 ## Normal builds
+
+The host automatically selects the manifest's immutable `toolchain.image_ref`
+for both generation and use builds, pulls it if needed, and verifies its actual
+image ID. `TOOLCHAIN_IMAGE` applies only to other cores. Mixed builds and
+`--stock-parity` run Fast in its pinned container before building other cores
+with the generic toolchain; they combine the results in one report. Cache checks
+use Fast's pinned toolchain identity independently of the generic image.
 
 `./build-mlp1.sh --stock-parity` (or `flycast_fast_umrk` by name) verifies the
 contract, unpacks the archive into `workdir/pgo/flycast-fast-umrk`, builds with

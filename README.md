@@ -161,7 +161,7 @@ The lane runs the old root `Makefile` rather than the current Flycast CMake
 lane, from its own checkout (`workdir/src/flycast-fast-umrk`), and keeps its
 profile data in `workdir/pgo/flycast-fast-umrk`. Its contract lives in
 `profiles/mlp1/flycast_fast_umrk/`: source commit, patched-source identity,
-managed patch and `build-mlp1.sh` hashes, toolchain image digest, canonical
+managed patch and dedicated recipe hashes, toolchain image digest, canonical
 container paths, phase flags, exclusions and the training record. `make check`
 exercises the contract, the cache fingerprinting, the compile-log audit and the
 training command.
@@ -171,6 +171,23 @@ training command.
 ./build-mlp1.sh --flycast-fast-umrk-profile-gen   # maintainer-only instrumented training core
 make check                                        # host fixtures and focused checks
 ```
+
+You don't need a toolchain override for Fast. The builder selects the immutable
+`toolchain.image_ref` from its profile manifest, pulls that exact image if it's
+missing, and checks its image ID before running. `TOOLCHAIN_IMAGE` controls the
+other cores only. Mixed and aggregate builds run Fast in its pinned container
+first, then combine its verified result with the other cores' normal build.
+Leaf's stock-parity cache check uses the same per-core fingerprint, so changing
+the generic toolchain doesn't invalidate Fast or require a global retag.
+
+The generation/use recipe lives in
+`scripts/mlp1-flycast-fast-umrk-recipe.sh`. Changes to shared orchestration no
+longer invalidate its PGO contract. The extraction preserved the source patch,
+flags and frozen dataset; it didn't retrain the profile. Bare and mixed builds
+reproduced the previously device-qualified artifact SHA-256
+`5061855fe0b393f578c553f1d8d0378eea63f59110e4ca72052ea3ef30d907eb`.
+That is artifact equivalence, not a new device test or qualification of other
+runtime/configuration changes.
 
 Its `.info` file is repo-owned (`info/mlp1/flycast_fast_umrk_libretro.info`)
 because libretro-super ships no metadata for a core it does not build. The

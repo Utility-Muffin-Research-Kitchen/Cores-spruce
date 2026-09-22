@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 PROFILE_DIR_NAME = "flycast_fast_umrk"
 MANIFEST_NAME = "manifest.json"
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RECIPE_INPUT_FILES = ("build-mlp1.sh",)
+RECIPE_INPUT_FILES = ("scripts/mlp1-flycast-fast-umrk-recipe.sh",)
 
 
 class ProfileError(ValueError):
@@ -157,7 +157,7 @@ def verify_contract(
     if actual_recipe != recipe_input["sha256"]:
         mismatches.append(
             "managed recipe input hash: manifest "
-            f"{recipe_input['sha256']} != build-mlp1.sh {actual_recipe}"
+            f"{recipe_input['sha256']} != dedicated recipe {actual_recipe}"
         )
 
     patch = manifest.get("patch")
@@ -690,6 +690,22 @@ def add_contract_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-dir", default="")
 
 
+def command_toolchain(args: argparse.Namespace) -> None:
+    """Resolve the qualified image without depending on any local Docker tag."""
+    manifest = load_json(args.profile_dir / MANIFEST_NAME, "profile manifest")
+    toolchain = manifest["toolchain"]
+    image_ref = require_str(toolchain, "image_ref", "manifest.toolchain")
+    digest = image_ref.rsplit("@sha256:", 1)
+    if len(digest) != 2 or not digest[0]:
+        raise ProfileError("toolchain.image_ref must be an immutable repository@sha256 reference")
+    require_sha256(digest[1], "toolchain.image_ref digest")
+    image_id = require_str(toolchain, "image_id", "manifest.toolchain")
+    if not image_id.startswith("sha256:"):
+        raise ProfileError("toolchain.image_id must start with sha256:")
+    require_sha256(image_id.removeprefix("sha256:"), "toolchain.image_id")
+    print(f"{image_ref}\t{image_id}")
+
+
 def command_tree_identity(args: argparse.Namespace) -> None:
     print(patched_tree_identity(Path(args.source_dir)))
 
@@ -697,6 +713,10 @@ def command_tree_identity(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    toolchain = subparsers.add_parser("toolchain")
+    toolchain.add_argument("--profile-dir", type=Path, required=True)
+    toolchain.set_defaults(handler=command_toolchain)
 
     validate = subparsers.add_parser("validate")
     add_contract_args(validate)

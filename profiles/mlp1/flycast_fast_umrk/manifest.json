@@ -9,9 +9,9 @@
     "patched_tree_sha256": "bfdbe6801941c908a08e2cdca9902b0e588fcac04fbaa97a6e7a969e68770d8a"
   },
   "recipe_input": {
-    "file": "build-mlp1.sh",
+    "file": "scripts/mlp1-flycast-fast-umrk-recipe.sh",
     "function": "build_flycast_fast_umrk_core",
-    "sha256": "2b637ff51271e22497b70f89a3bb6e95a0333ceaef1c0b524785f720f58e8c7b"
+    "sha256": "d8f6d23fd4b57c543fe38229d030aba6c32e9befb131be6e3a4d5452dd5614d9"
   },
   "patch": {
     "path": "patches/mlp1/flycast_fast_umrk.patch",
@@ -19,6 +19,7 @@
   },
   "toolchain": {
     "image": "ghcr.io/utility-muffin-research-kitchen/mlp1-toolchain",
+    "image_ref": "ghcr.io/utility-muffin-research-kitchen/mlp1-toolchain@sha256:66aac16fb8b07e663c9b4d66970f272df195a6eba98dfad8286eabbaa617faf9",
     "image_id": "sha256:66aac16fb8b07e663c9b4d66970f272df195a6eba98dfad8286eabbaa617faf9",
     "compiler": "aarch64-buildroot-linux-gnu-gcc.br_real (Buildroot -g4a34497) 12.3.0"
   },
