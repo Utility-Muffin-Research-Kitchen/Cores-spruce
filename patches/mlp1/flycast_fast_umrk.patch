@@ -1,0 +1,1085 @@
+# FlyCast Fast UMRK: managed MLP1 source patch for Cores-spruce.
+#
+# Applies to flyinghead/flycast at 4c293f306bc16a265c2d768af5d0cea138426054,
+# the April 2022 core revision pinned for flycast_fast_umrk in
+# config/mlp1-core-lock.json. Source-only: no build products, profile data,
+# absolute host paths or object-file notices are included.
+#
+# Replay with:
+#   git -C <checkout> clean -ffdx
+#   git -C <checkout> apply --ignore-space-change patches/mlp1/flycast_fast_umrk.patch
+#
+# Runtime identity (P1)
+#   core/libretro/libretro.cpp: retro_get_system_info().library_name becomes
+#   "FlyCast Fast UMRK", so RetroArch isolates this core's per-core config
+#   folder and options from the standalone and current libretro Flycast
+#   choices. The option prefix stays "reicast".
+#
+# Texture-token compatibility (P1)
+#   core/libretro/libretro_core_options.h and
+#   core/libretro/libretro_core_options_intl.h advertise "1" as the
+#   no-upscaling token, labelled "Disabled (1x)", and default to "1".
+#   core/libretro/libretro.cpp maps "1", "disabled" and "off" to
+#   TextureUpscale = 1, so a live change from 2x back to the no-upscale token
+#   cannot leave an upscale active. All 39 localized tables carry the same
+#   value list and default, and the v1/v0 option paths are derived from them.
+#
+# Performance change 1: cached texture anisotropy
+#   core/rend/gles/glcache.h tracks GL_TEXTURE_MAX_ANISOTROPY_EXT per texture
+#   in the parameter shadow and skips redundant glTexParameterf calls;
+#   core/rend/gles/gldraw.cpp routes the anisotropy write through that cache.
+#
+# Performance change 2: one final texture min-filter assignment
+#   core/rend/gles/gldraw.cpp picks the anisotropy-aware minification filter in
+#   a single assignment instead of writing a second MIN_FILTER value after the
+#   anisotropy call. The final value is unchanged for every tested input
+#   combination (tests/flycast_fast_umrk/minfilter_check.cpp).
+#
+# Performance change 3: lazy common-uniform updates
+#   core/rend/gles/gles.h and gles.cpp own a monotonically increasing
+#   shader_uniform_serial, advanced once per RenderFrame after PT_ALPHA and the
+#   other common ShaderUniforms values are prepared. GetProgram() binds the
+#   program and applies the common setter only when the program's stored serial
+#   is stale. Compilation marks a program current only when
+#   glIsProgram() == GL_TRUE, and teardown advances the serial so programs
+#   created afterwards start stale. The RPI4_SET_UNIFORM_ATTRIBUTES_BUG branch
+#   keeps its per-use refresh, and the polygon palette, clipping and trilinear
+#   writes are untouched.
+#
+# Build prerequisite 1: MLP1 make lane
+#   Makefile adds platform=mlp1 for the old root Makefile lane (FORCE_GLES=1,
+#   WITH_DYNAREC=arm64, HAVE_GENERIC_JIT=0, OpenMP off while threaded rendering
+#   stays available), gives the lane its own OPTFLAGS branch so the shared -O3
+#   cannot override MLP1_OPT, and adds the NOPROF_FILTER exclusion rule the PGO
+#   recipe drives.
+#
+# Build prerequisite 2: GLSM rglGetString return value
+#   core/libretro-common/glsm/glsm.c returns glGetString(name), and NULL when
+#   neither OpenGL nor OpenGL ES is enabled, instead of falling off the end of
+#   a non-void function.
+#
+# Build prerequisite 3: ARM7 LTO visibility
+#   core/hw/arm7/arm7.cpp marks CPUFiq() and CompileCode() used,
+#   externally_visible and noinline so the hand-written ARM7 call sites keep
+#   their entry points under LTO.
+#
+# Build prerequisite 4: instrumentation exclusions
+#   The NOPROF_FILTER rule above excludes the ARM64 dynarec, the SH4 block
+#   cache, fastmem/VMEM, the ARM7 core and libretro/vmem_utils.o: those units
+#   call into C/C++ from hand-written assembly with their own register
+#   assumptions, so gcov instrumentation stays out of them. No diagnostic
+#   counters are compiled in: this patch defines neither
+#   FLYCAST_LAZY_UNIFORM_DIAG nor the host-only GLES_UNIFORM_LIGHT seam.
+#
+# Evidence: tmp/dc-core-bench/lazy-uniform-pgo-20260922 (2026-09-22 experiment).
+# Its .gcda counters were produced under a different container source path and
+# are not a build input; profiles/mlp1/flycast_fast_umrk documents the frozen
+# production dataset instead.
+diff --git a/Makefile b/Makefile
+index 01d99c304..f4542fc67 100644
+--- a/Makefile
++++ b/Makefile
+@@ -233,6 +233,43 @@ else ifneq (,$(findstring rpi,$(platform)))
+ #########################################
+ # (armv7 a7, hard point, neon based) ####
+ # NESC, SNESC, C64 mini 
++else ifeq ($(platform), mlp1)
++	EXT ?= so
++	CC_AS    = ${CC_PREFIX}${CC}
++	TARGET := $(TARGET_NAME)_libretro.$(EXT)
++	SHARED += -shared -Wl,--version-script=link.T
++	LDFLAGS +=  -Wl,--no-undefined
++	fpic = -fPIC
++	LIBS += -lrt
++	ARM_FLOAT_ABI_HARD = 0
++	FORCE_GLES = 1
++	SINGLE_PREC_FLAGS = 1
++	CPUFLAGS += -DHOST_CPU=0x20000006 -DTARGET_LINUX_ARMv8 -frename-registers -DNOSSE -D__NEON_OPT
++	MLP1_OPT ?= -O2
++	MLP1_TUNE ?= -mcpu=cortex-a53 -mtune=cortex-a53 -march=armv8-a
++	MLP1_EXTRA_CFLAGS ?=
++	MLP1_EXTRA_CXXFLAGS ?= $(MLP1_EXTRA_CFLAGS)
++	MLP1_EXTRA_LDFLAGS ?=
++	CFLAGS += $(MLP1_OPT) $(MLP1_TUNE) $(CPUFLAGS) $(MLP1_EXTRA_CFLAGS)
++	CXXFLAGS += $(MLP1_OPT) $(MLP1_TUNE) $(CPUFLAGS) $(MLP1_EXTRA_CXXFLAGS)
++	ASFLAGS += $(CFLAGS) -c -frename-registers -fno-strict-aliasing -ftree-vectorize
++	PLATFORM_EXT := unix
++	WITH_DYNAREC=arm64
++	HAVE_GENERIC_JIT = 0
++	HAVE_VULKAN = 0
++	CORE_DEFINES += -DLOW_END
++	# The toolchain sysroot has no libgomp/omp.h, and TexCache.cpp includes it
++	# unconditionally when HAVE_OPENMP is on. The texture-upscale threads it
++	# drives are not used at our fixed native resolution anyway.
++	HAVE_OPENMP = 0
++	# MLP1_TUNE is repeated on the link line on purpose. Under -flto the
++	# compiler recompiles every TU at link time from the link command's
++	# options, not the compile command's; this toolchain's built-in default
++	# is -mcpu=cortex-a55, which then conflicts with the -march=armv8-a
++	# recorded in the LTO sections. Repeating the tune flags keeps the
++	# link-time recompile identical to the compile-time one.
++	LDFLAGS += $(MLP1_TUNE) -static-libgcc -static-libstdc++ $(MLP1_EXTRA_LDFLAGS)
++
+ else ifeq ($(platform), classic_armv7_a7)
+ 	EXT    ?= so
+ 	TARGET := $(TARGET_NAME)_libretro.$(EXT)
+@@ -988,6 +1025,13 @@ ifeq ($(DEBUG),1)
+ 	OPTFLAGS       := -O0
+ 	LDFLAGS        += -g
+ 	CFLAGS         += -g
++else ifeq ($(platform), mlp1)
++	# mlp1 owns its optimisation level through MLP1_OPT. Without this branch
++	# the shared -O3 below is appended after the platform block and silently
++	# overrides it, which would make every ladder rung look like -O3.
++	OPTFLAGS       := $(MLP1_OPT)
++	CORE_DEFINES   += -DNDEBUG
++	LDFLAGS        += -DNDEBUG
+ else
+ 	ifneq (,$(findstring msvc,$(platform)))
+ 		OPTFLAGS       := -O2
+@@ -1191,3 +1235,15 @@ endif
+ clean:
+ 	rm -f $(OBJECTS) $(TARGET)
+ 
++
++# PGO: the ARM64 dynarec, the SH4 block cache, fastmem/vmem and the ARM7 core
++# call into C++ from hand-written asm with their own register assumptions.
++# gcov instrumentation changes register allocation in those functions and the
++# emulator segfaults on the first fastmem access. Instrument everything else
++# and leave these subsystems alone. NOPROF_FILTER removes the profile flags
++# from these objects entirely, so no missing-profile warning is raised for
++# them; units training never reached elsewhere keep their warnings visible.
++ifneq ($(NOPROF_FILTER),)
++core/rec-ARM64/%.o core/hw/sh4/dyna/%.o core/hw/mem/%.o core/hw/arm7/%.o core/libretro/vmem_utils.o: CFLAGS := $(filter-out $(NOPROF_FILTER),$(CFLAGS))
++core/rec-ARM64/%.o core/hw/sh4/dyna/%.o core/hw/mem/%.o core/hw/arm7/%.o core/libretro/vmem_utils.o: CXXFLAGS := $(filter-out $(NOPROF_FILTER),$(CXXFLAGS))
++endif
+diff --git a/core/hw/arm7/arm7.cpp b/core/hw/arm7/arm7.cpp
+index 86ba3edc7..c52ade6bd 100644
+--- a/core/hw/arm7/arm7.cpp
++++ b/core/hw/arm7/arm7.cpp
+@@ -315,6 +315,7 @@ void aicaarm::reset()
+ 
+ extern "C"
+ NOINLINE
++__attribute__((used, externally_visible, noinline))
+ void CPUFiq()
+ {
+ 	u32 PC = reg[R15_ARM_NEXT].I+4;
+@@ -1610,7 +1611,9 @@ void DYNACALL MSR_do(u32 v)
+ }
+ 
+ //Compile & run block of code, starting armNextPC
+-extern "C" void CompileCode()
++extern "C"
++__attribute__((used, externally_visible, noinline))
++void CompileCode()
+ {
+ 	//Get the code ptr
+ 	void* rv=EMIT_GET_PTR();
+diff --git a/core/libretro-common/glsm/glsm.c b/core/libretro-common/glsm/glsm.c
+index 32d599a53..e3f4a95ac 100644
+--- a/core/libretro-common/glsm/glsm.c
++++ b/core/libretro-common/glsm/glsm.c
+@@ -271,7 +271,9 @@ const GLubyte* rglGetString(GLenum name)
+    log_cb(RETRO_LOG_INFO, "glGetString.\n");
+ #endif
+ #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
+-   glGetString(name);
++   return glGetString(name);
++#else
++   return NULL;
+ #endif
+ }
+ 
+diff --git a/core/libretro/libretro.cpp b/core/libretro/libretro.cpp
+index 2efca4b01..619b6aea3 100644
+--- a/core/libretro/libretro.cpp
++++ b/core/libretro/libretro.cpp
+@@ -854,7 +854,11 @@ static void update_variables(bool first_startup)
+ 
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    {
+-      if (!strcmp("off", var.value))
++      /* "1" is the advertised no-upscaling token for FlyCast Fast UMRK.
++         "disabled" and "off" stay accepted so option files written against
++         other Flycast generations keep meaning "no upscaling" instead of
++         silently leaving a previously selected upscale in place. */
++      if (!strcmp("1", var.value) || !strcmp("disabled", var.value) || !strcmp("off", var.value))
+          settings.rend.TextureUpscale = 1;
+       else if (!strcmp("2x", var.value))
+          settings.rend.TextureUpscale = 2;
+@@ -2264,7 +2268,11 @@ const char* retro_get_system_directory(void)
+ 
+ void retro_get_system_info(struct retro_system_info *info)
+ {
+-   info->library_name = "Flycast";
++   /* FlyCast Fast UMRK is this repository's dedicated MLP1 build of the April
++      2022 Flycast source. The name is deliberately distinct from the other
++      installed Flycast choices so RetroArch keeps its per-core config folder
++      and options separate. */
++   info->library_name = "FlyCast Fast UMRK";
+ #ifndef GIT_VERSION
+ #define GIT_VERSION ""
+ #endif
+diff --git a/core/libretro/libretro_core_options.h b/core/libretro/libretro_core_options.h
+index 3433ba403..867ad42b5 100644
+--- a/core/libretro/libretro_core_options.h
++++ b/core/libretro/libretro_core_options.h
+@@ -550,13 +550,13 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  NULL },
+          { "4x",  NULL },
+          { "6x",  NULL },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+diff --git a/core/libretro/libretro_core_options_intl.h b/core/libretro/libretro_core_options_intl.h
+index 7a58ffb6f..bed9890d0 100644
+--- a/core/libretro/libretro_core_options_intl.h
++++ b/core/libretro/libretro_core_options_intl.h
+@@ -762,13 +762,13 @@ struct retro_core_option_v2_definition option_defs_ar[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_AR },
+          { "4x",  OPTION_VAL_4X_AR },
+          { "6x",  OPTION_VAL_6X_AR },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -2401,13 +2401,13 @@ struct retro_core_option_v2_definition option_defs_ast[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_AST },
+          { "4x",  OPTION_VAL_4X_AST },
+          { "6x",  OPTION_VAL_6X_AST },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -4040,13 +4040,13 @@ struct retro_core_option_v2_definition option_defs_ca[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_CA },
+          { "4x",  OPTION_VAL_4X_CA },
+          { "6x",  OPTION_VAL_6X_CA },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -5679,13 +5679,13 @@ struct retro_core_option_v2_definition option_defs_chs[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_CHS },
+          { "4x",  OPTION_VAL_4X_CHS },
+          { "6x",  OPTION_VAL_6X_CHS },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -7318,13 +7318,13 @@ struct retro_core_option_v2_definition option_defs_cht[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_CHT },
+          { "4x",  OPTION_VAL_4X_CHT },
+          { "6x",  OPTION_VAL_6X_CHT },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -8957,13 +8957,13 @@ struct retro_core_option_v2_definition option_defs_cs[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_CS },
+          { "4x",  OPTION_VAL_4X_CS },
+          { "6x",  OPTION_VAL_6X_CS },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -10596,13 +10596,13 @@ struct retro_core_option_v2_definition option_defs_cy[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_CY },
+          { "4x",  OPTION_VAL_4X_CY },
+          { "6x",  OPTION_VAL_6X_CY },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -12235,13 +12235,13 @@ struct retro_core_option_v2_definition option_defs_da[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_DA },
+          { "4x",  OPTION_VAL_4X_DA },
+          { "6x",  OPTION_VAL_6X_DA },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -13874,13 +13874,13 @@ struct retro_core_option_v2_definition option_defs_de[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_DE },
+          { "4x",  OPTION_VAL_4X_DE },
+          { "6x",  OPTION_VAL_6X_DE },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -15513,13 +15513,13 @@ struct retro_core_option_v2_definition option_defs_el[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_EL },
+          { "4x",  OPTION_VAL_4X_EL },
+          { "6x",  OPTION_VAL_6X_EL },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -17152,13 +17152,13 @@ struct retro_core_option_v2_definition option_defs_eo[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_EO },
+          { "4x",  OPTION_VAL_4X_EO },
+          { "6x",  OPTION_VAL_6X_EO },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -18791,13 +18791,13 @@ struct retro_core_option_v2_definition option_defs_es[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_ES },
+          { "4x",  OPTION_VAL_4X_ES },
+          { "6x",  OPTION_VAL_6X_ES },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -20430,13 +20430,13 @@ struct retro_core_option_v2_definition option_defs_fa[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_FA },
+          { "4x",  OPTION_VAL_4X_FA },
+          { "6x",  OPTION_VAL_6X_FA },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -22069,13 +22069,13 @@ struct retro_core_option_v2_definition option_defs_fi[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_FI },
+          { "4x",  OPTION_VAL_4X_FI },
+          { "6x",  OPTION_VAL_6X_FI },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -23708,13 +23708,13 @@ struct retro_core_option_v2_definition option_defs_fr[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_FR },
+          { "4x",  OPTION_VAL_4X_FR },
+          { "6x",  OPTION_VAL_6X_FR },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -25347,13 +25347,13 @@ struct retro_core_option_v2_definition option_defs_gl[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_GL },
+          { "4x",  OPTION_VAL_4X_GL },
+          { "6x",  OPTION_VAL_6X_GL },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -26986,13 +26986,13 @@ struct retro_core_option_v2_definition option_defs_he[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_HE },
+          { "4x",  OPTION_VAL_4X_HE },
+          { "6x",  OPTION_VAL_6X_HE },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -28625,13 +28625,13 @@ struct retro_core_option_v2_definition option_defs_hu[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_HU },
+          { "4x",  OPTION_VAL_4X_HU },
+          { "6x",  OPTION_VAL_6X_HU },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -30264,13 +30264,13 @@ struct retro_core_option_v2_definition option_defs_id[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_ID },
+          { "4x",  OPTION_VAL_4X_ID },
+          { "6x",  OPTION_VAL_6X_ID },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -31903,13 +31903,13 @@ struct retro_core_option_v2_definition option_defs_it[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_IT },
+          { "4x",  OPTION_VAL_4X_IT },
+          { "6x",  OPTION_VAL_6X_IT },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -33542,13 +33542,13 @@ struct retro_core_option_v2_definition option_defs_ja[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_JA },
+          { "4x",  OPTION_VAL_4X_JA },
+          { "6x",  OPTION_VAL_6X_JA },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -35181,13 +35181,13 @@ struct retro_core_option_v2_definition option_defs_ko[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_KO },
+          { "4x",  OPTION_VAL_4X_KO },
+          { "6x",  OPTION_VAL_6X_KO },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -36820,13 +36820,13 @@ struct retro_core_option_v2_definition option_defs_mt[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_MT },
+          { "4x",  OPTION_VAL_4X_MT },
+          { "6x",  OPTION_VAL_6X_MT },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -38459,13 +38459,13 @@ struct retro_core_option_v2_definition option_defs_nl[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_NL },
+          { "4x",  OPTION_VAL_4X_NL },
+          { "6x",  OPTION_VAL_6X_NL },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -40098,13 +40098,13 @@ struct retro_core_option_v2_definition option_defs_no[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_NO },
+          { "4x",  OPTION_VAL_4X_NO },
+          { "6x",  OPTION_VAL_6X_NO },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -41737,13 +41737,13 @@ struct retro_core_option_v2_definition option_defs_oc[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_OC },
+          { "4x",  OPTION_VAL_4X_OC },
+          { "6x",  OPTION_VAL_6X_OC },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -43376,13 +43376,13 @@ struct retro_core_option_v2_definition option_defs_pl[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_PL },
+          { "4x",  OPTION_VAL_4X_PL },
+          { "6x",  OPTION_VAL_6X_PL },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -45015,13 +45015,13 @@ struct retro_core_option_v2_definition option_defs_pt_br[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_PT_BR },
+          { "4x",  OPTION_VAL_4X_PT_BR },
+          { "6x",  OPTION_VAL_6X_PT_BR },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -46654,13 +46654,13 @@ struct retro_core_option_v2_definition option_defs_pt_pt[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_PT_PT },
+          { "4x",  OPTION_VAL_4X_PT_PT },
+          { "6x",  OPTION_VAL_6X_PT_PT },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -48293,13 +48293,13 @@ struct retro_core_option_v2_definition option_defs_ro[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_RO },
+          { "4x",  OPTION_VAL_4X_RO },
+          { "6x",  OPTION_VAL_6X_RO },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -49932,13 +49932,13 @@ struct retro_core_option_v2_definition option_defs_ru[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_RU },
+          { "4x",  OPTION_VAL_4X_RU },
+          { "6x",  OPTION_VAL_6X_RU },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -51571,13 +51571,13 @@ struct retro_core_option_v2_definition option_defs_si[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_SI },
+          { "4x",  OPTION_VAL_4X_SI },
+          { "6x",  OPTION_VAL_6X_SI },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -53210,13 +53210,13 @@ struct retro_core_option_v2_definition option_defs_sk[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_SK },
+          { "4x",  OPTION_VAL_4X_SK },
+          { "6x",  OPTION_VAL_6X_SK },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -54849,13 +54849,13 @@ struct retro_core_option_v2_definition option_defs_sr[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_SR },
+          { "4x",  OPTION_VAL_4X_SR },
+          { "6x",  OPTION_VAL_6X_SR },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -56488,13 +56488,13 @@ struct retro_core_option_v2_definition option_defs_sv[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_SV },
+          { "4x",  OPTION_VAL_4X_SV },
+          { "6x",  OPTION_VAL_6X_SV },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -58127,13 +58127,13 @@ struct retro_core_option_v2_definition option_defs_tr[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_TR },
+          { "4x",  OPTION_VAL_4X_TR },
+          { "6x",  OPTION_VAL_6X_TR },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -59766,13 +59766,13 @@ struct retro_core_option_v2_definition option_defs_uk[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_UK },
+          { "4x",  OPTION_VAL_4X_UK },
+          { "6x",  OPTION_VAL_6X_UK },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -61405,13 +61405,13 @@ struct retro_core_option_v2_definition option_defs_val[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_VAL },
+          { "4x",  OPTION_VAL_4X_VAL },
+          { "6x",  OPTION_VAL_6X_VAL },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -63044,13 +63044,13 @@ struct retro_core_option_v2_definition option_defs_vn[] = {
+       NULL,
+       "video",
+       {
+-         { "disabled", NULL },
++         { "1",  "Disabled (1x)" },
+          { "2x",  OPTION_VAL_2X_VN },
+          { "4x",  OPTION_VAL_4X_VN },
+          { "6x",  OPTION_VAL_6X_VN },
+          { NULL, NULL },
+       },
+-      "disabled",
++      "1",
+    },
+    {/* TODO: needs clarification */
+       CORE_OPTION_NAME "_texupscale_max_filtered_texture_size",
+@@ -63963,4 +63963,4 @@ struct retro_core_options_v2 options_vn = {
+ }
+ #endif
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/core/rend/gles/glcache.h b/core/rend/gles/glcache.h
+index ae19b0c19..43f590746 100644
+--- a/core/rend/gles/glcache.h
++++ b/core/rend/gles/glcache.h
+@@ -214,6 +214,22 @@ public:
+ 		glTexParameteri(target, pname, param);
+ 	}
+ 
++	void TexParameterf(GLenum target,  GLenum pname,  GLfloat param)
++	{
++		if (target == GL_TEXTURE_2D && !_disable_cache)
++		{
++			TextureParameters &cur_params = _texture_params[_texture];
++			switch (pname) {
++			case GL_TEXTURE_MAX_ANISOTROPY_EXT:
++				if (cur_params._max_anisotropy == param)
++					return;
++				cur_params._max_anisotropy = param;
++				break;
++			}
++		}
++		glTexParameterf(target, pname, param);
++	}
++
+ 	GLuint GenTexture() {
+ 		if (_texture_cache_size == 0) {
+ 			_texture_cache_size = TEXTURE_ID_CACHE_SIZE;
+@@ -273,12 +289,13 @@ public:
+ private:
+ 	class TextureParameters {
+ 	public:
+-		TextureParameters() : _min_filter(0xFFFFFFFFu), _mag_filter(0xFFFFFFFFu), _wrap_s(0xFFFFFFFFu), _wrap_t(0xFFFFFFFFu) {}
++		TextureParameters() : _min_filter(0xFFFFFFFFu), _mag_filter(0xFFFFFFFFu), _wrap_s(0xFFFFFFFFu), _wrap_t(0xFFFFFFFFu), _max_anisotropy(-1.f) {}
+ 
+ 		GLenum _min_filter;
+ 		GLenum _mag_filter;
+ 		GLenum _wrap_s;
+ 		GLenum _wrap_t;
++		GLfloat _max_anisotropy;
+ 	};
+ 	GLuint _array_buffer;
+ 	GLuint _element_array_buffer;
+diff --git a/core/rend/gles/gldraw.cpp b/core/rend/gles/gldraw.cpp
+index 29a9539e0..1c455b2be 100644
+--- a/core/rend/gles/gldraw.cpp
++++ b/core/rend/gles/gldraw.cpp
+@@ -179,7 +179,10 @@ __forceinline
+ 		//bilinear filtering
+ 		//PowerVR supports also trilinear via two passes, but we ignore that for now
+ 		bool mipmapped = gp->tcw.MipMapped != 0 && gp->tcw.ScanOrder == 0 && settings.rend.UseMipmaps;
+-		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mipmapped ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR);
++		//anisotropy selects the trilinear filter below, so pick the final filter in one go
++		bool aniso = gl.max_anisotropy > 1.f && settings.rend.AnisotropicFiltering > 1;
++		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
++				mipmapped ? (aniso ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST) : GL_LINEAR);
+ 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+ #ifdef GL_TEXTURE_LOD_BIAS
+ 		if (!gl.is_gles && gl.gl_major >= 3 && mipmapped)
+@@ -188,15 +191,10 @@ __forceinline
+ 		if (gl.max_anisotropy > 1.f)
+ 		{
+ 			if (settings.rend.AnisotropicFiltering > 1)
+-			{
+-				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
++				glcache.TexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+ 						std::min((f32)settings.rend.AnisotropicFiltering, gl.max_anisotropy));
+-				// Set the recommended minification filter for best results
+-				if (mipmapped)
+-					glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+-			}
+ 			else
+-				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1.f);
++				glcache.TexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1.f);
+ 		}
+ 	}
+ 
+diff --git a/core/rend/gles/gles.cpp b/core/rend/gles/gles.cpp
+index 86df5f2ba..b9e8d8458 100644
+--- a/core/rend/gles/gles.cpp
++++ b/core/rend/gles/gles.cpp
+@@ -20,6 +20,12 @@ gl_ctx gl;
+ 
+ struct ShaderUniforms_t ShaderUniforms;
+ 
++// Common-uniform generation for lazy pipeline-shader updates. Starts at 1 so
++// value-initialized PipelineShader::uniform_serial (0) is always stale until
++// the program is initialized. Only ever advanced, never reset: a serial after
++// teardown cannot equal a surviving program's last-applied serial.
++u64 shader_uniform_serial = 1;
++
+ u32 gcflip;
+ 
+ float fb_scale_x, fb_scale_y;
+@@ -374,6 +380,7 @@ PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
+ 		shader->fog_clamping = fog_clamping;
+ 		shader->trilinear = trilinear;
+ 		shader->palette = palette;
++		shader->uniform_serial = 0; // never applied until CompilePipelineShader marks it
+ 		CompilePipelineShader(shader);
+ 	}
+ 
+@@ -390,6 +397,17 @@ PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
+ 	if (gu != -1)
+ 		glUniform1i(gu, 1);
+ 	ShaderUniforms.Set(shader);
++	shader->mark_common_uniforms_current();
++#else
++	// Bind before any uniform write: glUniform* targets the active program.
++	// The GL cache suppresses redundant UseProgram calls; callers may bind
++	// again after we return.
++	glcache.UseProgram(shader->program);
++	if (shader->common_uniforms_stale())
++	{
++		ShaderUniforms.Set(shader);
++		shader->mark_common_uniforms_current();
++	}
+ #endif
+ 
+ 	return shader;
+@@ -623,7 +641,15 @@ bool CompilePipelineShader(	PipelineShader* s)
+ 
+ 	ShaderUniforms.Set(s);
+ 
+-	return glIsProgram(s->program)==GL_TRUE;
++	// Mark only a successfully initialized program current so the caller's
++	// first GetProgram does not immediately repeat the setter. A failed or
++	// uninitialized program stays stale (uniform_serial remains 0 or old).
++	if (glIsProgram(s->program) == GL_TRUE)
++	{
++		s->mark_common_uniforms_current();
++		return true;
++	}
++	return false;
+ }
+ 
+ /*
+@@ -668,6 +694,10 @@ static void gl_delete_shaders()
+ 	gl.shaders.clear();
+ 	glDeleteProgram(gl.modvol_shader.program);
+ 	gl.modvol_shader.program = 0;
++	// Invalidate every last-applied serial: programs created after teardown
++	// value-initialize uniform_serial to 0, and advancing (never resetting)
++	// the global serial keeps that distinct from any surviving generation.
++	shader_uniform_serial++;
+ }
+ 
+ static void gl_term(void)
+@@ -872,11 +902,11 @@ static bool RenderFrame(void)
+ 
+ 	ShaderUniforms.PT_ALPHA=(PT_ALPHA_REF&0xFF)/255.0f;
+ 
+-	for (const auto& it : gl.shaders)
+-	{
+-		glcache.UseProgram(it.second.program);
+-		ShaderUniforms.Set(&it.second);
+-	}
++	// Former eager loop: bind and ShaderUniforms.Set() every cached program.
++	// Advance the common-uniform generation instead; each program applies the
++	// setter once on first GetProgram() use within this RenderFrame
++	// invocation (RTT and onscreen passes each advance their own serial).
++	shader_uniform_serial++;
+ 
+ 	//setup render target first
+ 	if (is_rtt)
+diff --git a/core/rend/gles/gles.h b/core/rend/gles/gles.h
+index 716484b55..2e008f1ac 100644
+--- a/core/rend/gles/gles.h
++++ b/core/rend/gles/gles.h
+@@ -37,6 +37,12 @@
+ 
+ #define glCheck()
+ 
++// Current common-uniform generation, advanced once per RenderFrame invocation
++// after every common ShaderUniforms value (including PT_ALPHA) is prepared.
++// PipelineShader::uniform_serial compares equal to this when the program is
++// up to date for the current render. Owned by the GLES renderer (gles.cpp).
++extern u64 shader_uniform_serial;
++
+ //vertex types
+ extern u32 gcflip;
+ extern glm::mat4 ViewportMatrix;
+@@ -56,6 +62,10 @@ struct PipelineShader
+ 	GLint fog_clamp_min, fog_clamp_max;
+ 	GLint normal_matrix;
+ 	GLint palette_index;
++	// Last shader_uniform_serial generation whose common uniforms were applied
++	// to this program. 0 means never (value-initialized); the renderer's
++	// current serial starts above 0 so a fresh program is always stale.
++	u64 uniform_serial;
+ 
+ 	//
+ 	bool cp_AlphaTest;
+@@ -71,9 +81,12 @@ struct PipelineShader
+ 	bool fog_clamping;
+ 	bool trilinear;
+ 	bool palette;
+-};
+-
+ 
++	// Shared serial protocol used by GetProgram/CompilePipelineShader, so both
++	// sides execute the same comparison/mark code.
++	bool common_uniforms_stale() const { return uniform_serial != shader_uniform_serial; }
++	void mark_common_uniforms_current() { uniform_serial = shader_uniform_serial; }
++};
+ 
+ struct gl_ctx
+ {

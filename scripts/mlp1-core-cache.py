@@ -96,6 +96,70 @@ def lock_entries(args: argparse.Namespace) -> dict[str, dict]:
     return entries
 
 
+def recipe_source_sha256(path: Path, function: str) -> str:
+    """Hash the whole dedicated recipe source and require the named entry point.
+
+    The dedicated lane's effective flags live in module-level constants and
+    helper functions, not only in its build function, so the whole source is
+    the fingerprint input. Any edit therefore invalidates the cache instead of
+    leaving a stale hit behind.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CacheError(f"cannot read build recipe source {path}: {error}") from error
+    if f"{function}() {{\n" not in text:
+        raise CacheError(f"{path} does not define {function}()")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def curated_inputs(args: argparse.Namespace, core: str, entry: dict) -> dict[str, str]:
+    """Return the repo-owned inputs that only some locks/cores declare.
+
+    Keys are added only when the input exists, so cores without a profile
+    contract, a repo-owned info file or a dedicated recipe keep the exact
+    fingerprint they had before these inputs existed.
+    """
+    extra: dict[str, str] = {}
+
+    profile_root = getattr(args, "profile_dir", None)
+    if profile_root is not None:
+        manifest = profile_root / core / "manifest.json"
+        if manifest.is_file():
+            extra["profile_manifest_sha256"] = sha256_file(manifest)
+            archive_name = ""
+            try:
+                declared = json.loads(manifest.read_text(encoding="utf-8"))
+                value = declared.get("archive", {}).get("path")
+            except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+                value = None
+            if isinstance(value, str) and value:
+                archive_name = value
+            archive = manifest.parent / archive_name if archive_name else None
+            extra["profile_archive_sha256"] = (
+                sha256_file(archive) if archive is not None and archive.is_file() else ""
+            )
+
+    info_root = getattr(args, "info_source_dir", None)
+    if info_root is not None:
+        info_file = info_root / f"{core}_libretro.info"
+        if info_file.is_file():
+            extra["repo_info_sha256"] = sha256_file(info_file)
+
+    build_recipe = entry.get("build_recipe")
+    if isinstance(build_recipe, dict):
+        source = build_recipe.get("source")
+        function = build_recipe.get("function")
+        if not isinstance(source, str) or not source or not isinstance(function, str) or not function:
+            raise CacheError(f"{core}: build_recipe must name a source file and a function")
+        recipe_root = getattr(args, "recipe_root", None)
+        if recipe_root is None:
+            raise CacheError(f"{core}: --recipe-root is required for a dedicated build recipe")
+        extra["recipe_source_sha256"] = recipe_source_sha256(recipe_root / source, function)
+
+    return extra
+
+
 def input_fingerprint(args: argparse.Namespace, core: str, entry: dict) -> str:
     patch = args.patch_dir / f"{core}.patch"
     payload = {
@@ -115,6 +179,7 @@ def input_fingerprint(args: argparse.Namespace, core: str, entry: dict) -> str:
         "cxxflags": args.cxxflags,
         "ldflags": args.ldflags,
     }
+    payload.update(curated_inputs(args, core, entry))
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -394,6 +459,11 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cflags", required=True)
     parser.add_argument("--cxxflags", required=True)
     parser.add_argument("--ldflags", required=True)
+    # Optional curated inputs. Cores that do not declare them keep their
+    # previous fingerprint byte for byte.
+    parser.add_argument("--profile-dir", type=Path)
+    parser.add_argument("--info-source-dir", type=Path)
+    parser.add_argument("--recipe-root", type=Path)
     parser.add_argument("--core", action="append", required=True)
 
 
