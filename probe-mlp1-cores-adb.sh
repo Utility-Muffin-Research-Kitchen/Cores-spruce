@@ -198,6 +198,9 @@ done <"$host_tmp/manifest.tsv"
 python3 "$REPO_ROOT/scripts/mlp1-core-report.py" apply \
     --report "$REPORT_JSON_PATH" \
     --cores-dir "$CORES_OUTPUT_DIR" \
-    --results "$host_tmp/results.tsv"
+    --results "$host_tmp/results.tsv" \
+    --source device
+python3 "$REPO_ROOT/scripts/mlp1-core-report.py" verify \
+    --report "$REPORT_JSON_PATH" --cores-dir "$CORES_OUTPUT_DIR"
 
 echo "Updated $REPORT_JSON_PATH with exact library_name values."

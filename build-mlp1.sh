@@ -772,8 +772,9 @@ report_add_row() {
     local library_name="${13:-}"
     local build_action="${14:-}"
     local input_fingerprint="${15:-}"
+    local library_name_source="${16:-}"
 
-    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning$REPORT_SEP$source_url$REPORT_SEP$source_commit$REPORT_SEP$build_lane$REPORT_SEP$sha256$REPORT_SEP$library_name$REPORT_SEP$build_action$REPORT_SEP$input_fingerprint")
+    REPORT_ROWS+=("$core$REPORT_SEP$status$REPORT_SEP$core_file$REPORT_SEP$info_file$REPORT_SEP$reason$REPORT_SEP$machine$REPORT_SEP$max_glibc$REPORT_SEP$tuning$REPORT_SEP$source_url$REPORT_SEP$source_commit$REPORT_SEP$build_lane$REPORT_SEP$sha256$REPORT_SEP$library_name$REPORT_SEP$build_action$REPORT_SEP$input_fingerprint$REPORT_SEP$library_name_source")
 }
 
 write_json_report() {
@@ -788,9 +789,9 @@ write_json_report() {
     local compiled_count=0
     local reused_count=0
     local named_count=0
-    local row row_status row_library_name row_build_action
+    local row row_status row_library_name row_build_action row_library_name_source
     for row in ${REPORT_ROWS[@]+"${REPORT_ROWS[@]}"}; do
-        IFS="$REPORT_SEP" read -r _ row_status _ _ _ _ _ _ _ _ _ _ row_library_name row_build_action _ <<<"$row"
+        IFS="$REPORT_SEP" read -r _ row_status _ _ _ _ _ _ _ _ _ _ row_library_name row_build_action _ row_library_name_source <<<"$row"
         if [[ "$row_status" == "built" ]]; then
             built_count=$((built_count + 1))
             case "$row_build_action" in
@@ -801,7 +802,7 @@ write_json_report() {
                     reused_count=$((reused_count + 1))
                     ;;
             esac
-            if [[ -n "$row_library_name" ]]; then
+            if [[ -n "$row_library_name" && -n "$row_library_name_source" ]]; then
                 named_count=$((named_count + 1))
             fi
         fi
@@ -846,9 +847,10 @@ write_json_report() {
         printf '  "cores": [\n'
         local index=0
         for row in ${REPORT_ROWS[@]+"${REPORT_ROWS[@]}"}; do
-            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane sha256 library_name build_action input_fingerprint <<<"$row"
+            IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane sha256 library_name build_action input_fingerprint library_name_source <<<"$row"
             if [[ "$library_name_status" != "complete" ]]; then
                 library_name=""
+                library_name_source=""
             fi
             if [[ "$index" -gt 0 ]]; then
                 printf ',\n'
@@ -867,6 +869,7 @@ write_json_report() {
             printf '      "build_lane": "%s",\n' "$(json_escape "$build_lane")"
             printf '      "sha256": "%s",\n' "$(json_escape "$sha256")"
             printf '      "library_name": "%s",\n' "$(json_escape "$library_name")"
+            printf '      "library_name_source": "%s",\n' "$(json_escape "$library_name_source")"
             printf '      "build_action": "%s",\n' "$(json_escape "$build_action")"
             printf '      "input_fingerprint": "%s"\n' "$(json_escape "$input_fingerprint")"
             printf '    }'
@@ -1506,10 +1509,10 @@ reuse_cached_core() {
     fi
 
     local core status core_file info_file reason machine max_glibc tuning
-    local source_url source_commit build_lane sha256 library_name build_action
+    local source_url source_commit build_lane sha256 library_name library_name_source build_action
     local input_fingerprint
     IFS="$REPORT_SEP" read -r core status core_file info_file reason machine \
-        max_glibc tuning source_url source_commit build_lane sha256 library_name \
+        max_glibc tuning source_url source_commit build_lane sha256 library_name library_name_source \
         build_action input_fingerprint <<<"$cached_row"
     if [[ "$core" == flycast_fast_umrk && -n "${MLP1_FAST_BUILD_ACTION:-}" ]]; then
         build_action="$MLP1_FAST_BUILD_ACTION"
@@ -1519,7 +1522,7 @@ reuse_cached_core() {
     report_add_row "$core" "$status" "$core_file" "$info_file" "$reason" \
         "$machine" "$max_glibc" "$tuning" "$source_url" "$source_commit" \
         "$build_lane" "$sha256" "$library_name" "$build_action" \
-        "$input_fingerprint"
+        "$input_fingerprint" "$library_name_source"
 }
 
 build_one_core() {
