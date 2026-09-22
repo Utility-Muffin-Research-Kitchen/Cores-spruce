@@ -146,6 +146,42 @@ fall back to loose files in `BIOS/`. The PUAE build also brings the pinned
 core-info extension list into line with the core's own `valid_extensions` by
 adding its missing `raw` floppy-image entry.
 
+### FlyCast Fast UMRK (April 2022 Flycast, PGO)
+
+`flycast_fast_umrk` is an additional MLP1 Dreamcast core: the pinned April 2022
+Flycast source plus `patches/mlp1/flycast_fast_umrk.patch` (cached texture
+anisotropy, one final texture min-filter assignment, lazy common-uniform shader
+updates, the MLP1 old-Makefile lane, the GLSM `rglGetString` return fix, ARM7
+LTO visibility attributes and the instrumentation exclusions), built with
+Cortex-A55 tuning, LTO and a frozen profile-guided optimization dataset. The
+existing `flycast` pin and the standalone emulator are untouched; this is a
+third choice, not a replacement.
+
+The lane runs the old root `Makefile` rather than the current Flycast CMake
+lane, from its own checkout (`workdir/src/flycast-fast-umrk`), and keeps its
+profile data in `workdir/pgo/flycast-fast-umrk`. Its contract lives in
+`profiles/mlp1/flycast_fast_umrk/`: source commit, patched-source identity,
+managed patch and `build-mlp1.sh` hashes, toolchain image digest, canonical
+container paths, phase flags, exclusions and the training record. `make check`
+exercises the contract, the cache fingerprinting, the compile-log audit and the
+training command.
+
+```sh
+./build-mlp1.sh flycast_fast_umrk                 # profile-use build from the frozen dataset
+./build-mlp1.sh --flycast-fast-umrk-profile-gen   # maintainer-only instrumented training core
+make check                                        # host fixtures and focused checks
+```
+
+Its `.info` file is repo-owned (`info/mlp1/flycast_fast_umrk_libretro.info`)
+because libretro-super ships no metadata for a core it does not build. The
+probed `retro_get_system_info().library_name` is `FlyCast Fast UMRK`, which is
+also the core's config folder, so its options stay isolated from the other
+Flycast choices. Training is an explicit maintainer operation: see
+[`profiles/mlp1/flycast_fast_umrk/README.md`](profiles/mlp1/flycast_fast_umrk/README.md)
+for the generation build, the owned device training command and the freeze
+command. Until that dataset is frozen, the lane fails with an actionable message
+and `--stock-parity` reports the core as a cache miss.
+
 Every lane's previously staged core is removed before its build runs, so a lane
 that produces nothing is reported as `failed`, never as `built`. If a build
 stages a binary byte-identical to the one it replaced, the text report notes it
