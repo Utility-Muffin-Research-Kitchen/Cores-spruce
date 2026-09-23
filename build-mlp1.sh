@@ -600,7 +600,7 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
     MLP1_FAST_BUILD_ACTION=""
     has_fast=0
     has_other=0
-    for core in "${requested_cores[@]}"; do
+    for core in ${requested_cores[@]+"${requested_cores[@]}"}; do
         if [[ "$core" == "flycast_fast_umrk" ]]; then has_fast=1; else has_other=1; fi
     done
     if [[ "$has_fast" == "1" ]]; then
@@ -650,7 +650,7 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
     container_report_json_path="/workspace/output/mlp1/build-report.json"
     if [[ -z "$REPORT_PATH_EXPLICIT" && -z "$REPORT_JSON_PATH_EXPLICIT" ]]; then
         aggregate=0
-        for arg in "${BUILD_ARGS[@]}"; do
+        for arg in ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}; do
             case "$arg" in
                 --stock-parity|--spruce-all|--spruce-installed|--spruce-buildable)
                     aggregate=1
@@ -711,7 +711,7 @@ if [[ "${IN_MLP1_CONTAINER:-0}" != "1" ]]; then
     fi
 
     mkdir -p "$OUTPUT_DIR"
-    docker run "${docker_args[@]}" "$TOOLCHAIN_IMAGE" /workspace/build-mlp1.sh "${BUILD_ARGS[@]}"
+    docker run "${docker_args[@]}" "$TOOLCHAIN_IMAGE" /workspace/build-mlp1.sh ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
     exit $?
 fi
 
@@ -789,7 +789,7 @@ write_json_report() {
     local reused_count=0
     local named_count=0
     local row row_status row_library_name row_build_action
-    for row in "${REPORT_ROWS[@]}"; do
+    for row in ${REPORT_ROWS[@]+"${REPORT_ROWS[@]}"}; do
         IFS="$REPORT_SEP" read -r _ row_status _ _ _ _ _ _ _ _ _ _ row_library_name row_build_action _ <<<"$row"
         if [[ "$row_status" == "built" ]]; then
             built_count=$((built_count + 1))
@@ -845,7 +845,7 @@ write_json_report() {
         printf '  "text_report": "%s",\n' "$(json_escape "$REPORT_PATH")"
         printf '  "cores": [\n'
         local index=0
-        for row in "${REPORT_ROWS[@]}"; do
+        for row in ${REPORT_ROWS[@]+"${REPORT_ROWS[@]}"}; do
             IFS="$REPORT_SEP" read -r core row_status core_file info_file reason machine max_glibc tuning source_url source_commit build_lane sha256 library_name build_action input_fingerprint <<<"$row"
             if [[ "$library_name_status" != "complete" ]]; then
                 library_name=""
@@ -891,7 +891,7 @@ if [[ "$build_mode" == spruce-* ]]; then
 fi
 echo
 
-for core in "${deferred_cores[@]}"; do
+for core in ${deferred_cores[@]+"${deferred_cores[@]}"}; do
     reason="$(spruce_deferred_reason "$core")"
     printf 'deferred %s %s\n' "$core" "$reason" >>"$REPORT_PATH"
     report_add_row "$core" "deferred" "" "" "$reason" "" "" "not-built"
@@ -954,9 +954,9 @@ build_core_info_probe() {
     mkdir -p "$(dirname "$CORE_INFO_PROBE_PATH")"
     rm -f "$temp_path"
     if ! "$cc" -std=c11 -Wall -Wextra -Werror \
-        "${profile_cflags[@]}" \
+        ${profile_cflags[@]+"${profile_cflags[@]}"} \
         "$REPO_ROOT/tools/mlp1-core-info-probe.c" \
-        "${profile_ldflags[@]}" -ldl -o "$temp_path"; then
+        ${profile_ldflags[@]+"${profile_ldflags[@]}"} -ldl -o "$temp_path"; then
         rm -f "$temp_path"
         return 1
     fi
@@ -971,7 +971,7 @@ stage_core_info_probe_libraries() {
     local -a core_paths=()
     local row row_status core_file
 
-    for row in "${REPORT_ROWS[@]}"; do
+    for row in ${REPORT_ROWS[@]+"${REPORT_ROWS[@]}"}; do
         IFS="$REPORT_SEP" read -r _ row_status core_file _ <<<"$row"
         if [[ "$row_status" == "built" ]]; then
             core_paths+=("$CORES_OUTPUT_DIR/$core_file")
@@ -1604,7 +1604,7 @@ if ! build_core_info_probe; then
     echo "Failed to build the MLP1 core info probe." >&2
     exit 1
 fi
-for core in "${requested_cores[@]}"; do
+for core in ${requested_cores[@]+"${requested_cores[@]}"}; do
     if [[ "$core" == flycast_fast_umrk && -n "${MLP1_FAST_BUILD_ACTION:-}" ]]; then
         if ! reuse_cached_core "$core"; then
             echo "Fast result from its pinned container is missing or stale" >&2
