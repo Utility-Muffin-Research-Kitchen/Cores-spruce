@@ -64,6 +64,7 @@ class Mlp1CoreCacheTest(unittest.TestCase):
                     "build_lane": "generic-libretro-super",
                     "sha256": hashlib.sha256(payload).hexdigest(),
                     "library_name": core.title(),
+                    "library_name_source": "container",
                 }
             )
         self.report = {
@@ -157,6 +158,12 @@ class Mlp1CoreCacheTest(unittest.TestCase):
         self.assertEqual(
             {row["build_action"] for row in report["cores"]}, {"adopted"}
         )
+        self.assertEqual(
+            {row["library_name_source"] for row in report["cores"]}, {"container"}
+        )
+        reused = self.run_tool("reuse", "--selected-core", "alpha")
+        self.assertEqual(reused.returncode, 0, reused.stderr)
+        self.assertEqual(reused.stdout.strip().split("\x1f")[13], "container")
 
     def test_recipe_change_misses_only_the_changed_core(self) -> None:
         self.assertEqual(self.adopt().returncode, 0)
@@ -167,6 +174,26 @@ class Mlp1CoreCacheTest(unittest.TestCase):
         self.assertIn("hit\talpha\t", checked.stdout)
         self.assertIn("miss\tbeta\tinput fingerprint changed", checked.stdout)
         self.assertIn("cache: 1 reused / 1 misses", checked.stdout)
+
+    def test_report_reassembly_preserves_probe_source_for_same_bytes(self) -> None:
+        self.assertEqual(self.adopt().returncode, 0)
+        report = json.loads(self.report_path.read_text(encoding="utf-8"))
+        for row in report["cores"]:
+            row["library_name"] = ""
+            row["library_name_source"] = ""
+        report["library_name_status"] = "pending"
+        report["library_name_count"] = 0
+        self.write_json(self.report_path, report)
+        updated = self.run_tool("update", "--report", str(self.report_path))
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            {entry["library_name_source"] for entry in cache["entries"].values()},
+            {"container"},
+        )
+        reused = self.run_tool("reuse", "--selected-core", "alpha")
+        self.assertEqual(reused.returncode, 0, reused.stderr)
+        self.assertEqual(reused.stdout.strip().split("\x1f")[13], "container")
 
     def test_changed_binary_is_a_cache_miss(self) -> None:
         self.assertEqual(self.adopt().returncode, 0)

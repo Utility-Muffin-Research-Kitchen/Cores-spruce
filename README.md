@@ -258,24 +258,32 @@ staged binary with `sha256` and reserves `library_name` for the exact,
 case-sensitive value returned by the core's `retro_get_system_info()`.
 
 An MLP1 report containing newly compiled core bytes leaves
-`library_name_status` as `pending`. With the target device connected, complete
-the report before packaging it:
+`library_name_status` as `pending`. Complete the report without a device:
 
 ```sh
-ADB_SERIAL=optional-device-serial ./probe-mlp1-cores-adb.sh
+./probe-mlp1-cores-container.sh
 python3 scripts/mlp1-core-report.py verify \
     --report output/mlp1/build-report.json \
     --cores-dir output/mlp1/cores
 ```
 
-The runner validates every report checksum, pushes the probe, its isolated
+The container runner checks every report checksum, runs the AArch64 probe with
+the Buildroot sysroot loader, and records `library_name_source=container` in
+the report and matching core cache entries. The current stock core set uses
+the sysroot's EGL/GLES libraries; no device firmware libraries are needed.
+On amd64, Docker must be able to run `linux/arm64` containers via qemu/binfmt.
+
+For explicit device qualification, run
+`ADB_SERIAL=optional-device-serial ./probe-mlp1-cores-adb.sh`. This runner
+validates every report checksum, pushes the probe, its isolated
 dependency closure, and one core at a time into a private directory under
 device `/tmp`, and removes that directory on success or failure. The helper
 libraries exist only to let `dlopen()` resolve build-time dependencies during
 the probe; they are not part of the RetroArch package. The runner updates the
 report atomically only after all built rows succeed, setting
 `library_name_status` to `complete` and
-`library_name_count` to the number of built cores. It does not inspect or alter
+`library_name_count` to the number of built cores. It records
+`library_name_source=device`. It does not inspect or alter
 the device SD card, saves, or states. Without `ADB_SERIAL`, it uses the first
 online device from `adb devices`.
 

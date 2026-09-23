@@ -28,6 +28,7 @@ REPORT_FIELDS = (
     "build_lane",
     "sha256",
     "library_name",
+    "library_name_source",
 )
 
 
@@ -347,8 +348,16 @@ def row_to_entry(
     if not isinstance(machine, str) or "AArch64" not in machine:
         raise CacheError(f"{core}: report does not identify an AArch64 binary")
     library_name = row.get("library_name") if isinstance(row.get("library_name"), str) else ""
+    library_name_source = row.get("library_name_source") if isinstance(row.get("library_name_source"), str) else ""
     if not library_name and isinstance(prior, dict) and prior.get("sha256") == actual_sha:
         library_name = prior.get("library_name", "")
+        library_name_source = prior.get("library_name_source", "")
+    elif (not library_name_source and isinstance(prior, dict)
+          and prior.get("sha256") == actual_sha
+          and prior.get("library_name") == library_name):
+        library_name_source = prior.get("library_name_source", "")
+    if library_name_source not in ("", "container", "device"):
+        raise CacheError(f"{core}: invalid library_name_source")
     entry = {field: row.get(field, "") for field in REPORT_FIELDS}
     entry.update(
         {
@@ -360,6 +369,7 @@ def row_to_entry(
             "sha256": actual_sha,
             "info_sha256": sha256_file(info_path),
             "library_name": library_name,
+            "library_name_source": library_name_source,
             "input_fingerprint": input_fingerprint(args, core, lock_entry),
         }
     )

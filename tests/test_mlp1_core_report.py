@@ -80,7 +80,7 @@ class Mlp1CoreReportTest(unittest.TestCase):
         for command in ("manifest", "verify", "apply"):
             with self.subTest(command=command):
                 extra = (
-                    ("--results", str(results_path))
+                    ("--results", str(results_path), "--source", "container")
                     if command == "apply"
                     else ()
                 )
@@ -203,12 +203,13 @@ class Mlp1CoreReportTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        result = self.run_tool("apply", "--results", str(results))
+        result = self.run_tool("apply", "--results", str(results), "--source", "container")
         self.assertEqual(result.returncode, 0, result.stderr)
         updated = json.loads(self.report_path.read_text(encoding="utf-8"))
         self.assertEqual(updated["library_name_status"], "complete")
         self.assertEqual(updated["library_name_count"], 2)
         self.assertEqual(updated["cores"][0]["library_name"], "fake-08")
+        self.assertEqual(updated["cores"][0]["library_name_source"], "container")
         self.assertEqual(
             updated["cores"][1]["library_name"], "MAME 2010 & Friends"
         )
@@ -231,10 +232,64 @@ class Mlp1CoreReportTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        result = self.run_tool("apply", "--results", str(results))
+        result = self.run_tool("apply", "--results", str(results), "--source", "container")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing=mame", result.stderr)
         self.assertEqual(self.report_path.read_bytes(), original)
+
+    def test_mismatched_result_checksum_preserves_report_and_cache(self) -> None:
+        cache_path = self.temp_dir / "core-cache.json"
+        cache_path.write_text(json.dumps({
+            "version": 1, "platform": "mlp1", "entries": {
+                core: {"sha256": row["sha256"], "library_name": "old"}
+                for core, row in zip(self.core_data, self.report["cores"], strict=True)
+            },
+        }), encoding="utf-8")
+        original_report = self.report_path.read_bytes()
+        original_cache = cache_path.read_bytes()
+        results = self.temp_dir / "results.tsv"
+        results.write_text(
+            "fake08\tfake08_libretro.so\t" + "0" * 64 + "\tfake-08\n"
+            "mame\tmame_libretro.so\t" + self.report["cores"][1]["sha256"] + "\tMAME\n",
+            encoding="utf-8",
+        )
+        result = self.run_tool("apply", "--results", str(results), "--source", "container")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("result checksum", result.stderr)
+        self.assertEqual(self.report_path.read_bytes(), original_report)
+        self.assertEqual(cache_path.read_bytes(), original_cache)
+
+    def test_apply_updates_only_matching_cache_entries(self) -> None:
+        cache_path = self.temp_dir / "core-cache.json"
+        cache_path.write_text(json.dumps({
+            "version": 1, "platform": "mlp1", "entries": {
+                "fake08": {"sha256": self.report["cores"][0]["sha256"], "library_name": "old"},
+                "mame": {"sha256": "0" * 64, "library_name": "stale"},
+            },
+        }), encoding="utf-8")
+        results = self.temp_dir / "results.tsv"
+        results.write_text(
+            "fake08\tfake08_libretro.so\t" + self.report["cores"][0]["sha256"] + "\tfake-08\n"
+            "mame\tmame_libretro.so\t" + self.report["cores"][1]["sha256"] + "\tMAME\n",
+            encoding="utf-8",
+        )
+        result = self.run_tool("apply", "--results", str(results), "--source", "device")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))["entries"]
+        self.assertEqual(cache["fake08"]["library_name_source"], "device")
+        self.assertEqual(cache["fake08"]["library_name"], "fake-08")
+        self.assertEqual(cache["mame"]["library_name"], "stale")
+        self.assertNotIn("library_name_source", cache["mame"])
+
+    def test_verify_rejects_legacy_name_without_source(self) -> None:
+        self.report["library_name_status"] = "complete"
+        self.report["library_name_count"] = 2
+        for row in self.report["cores"]:
+            row["library_name"] = "Legacy"
+        self.write_report(self.report)
+        result = self.run_tool("verify")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing library_name_source", result.stderr)
 
     def test_manifest_rejects_changed_core_bytes(self) -> None:
         (self.cores_dir / "mame_libretro.so").write_bytes(b"replacement")

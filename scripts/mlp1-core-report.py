@@ -15,6 +15,7 @@ import tempfile
 
 REPORT_VERSION = 2
 ROW_STATUSES = ("built", "failed", "deferred")
+PROBE_SOURCES = ("container", "device")
 
 
 class ReportError(ValueError):
@@ -115,12 +116,15 @@ def validate_report_summary(report: dict) -> dict[str, list[dict]]:
     for row in rows_by_status["built"]:
         core = row["core"]
         library_name = row.get("library_name")
+        source = row.get("library_name_source", "")
         if not isinstance(library_name, str):
             raise ReportError(f"{core}: library_name must be a string")
+        if source not in ("", *PROBE_SOURCES):
+            raise ReportError(f"{core}: invalid library_name_source {source!r}")
         if library_name_status == "pending":
-            if library_name:
+            if library_name or source:
                 raise ReportError(
-                    f"{core}: pending report must have an empty library_name"
+                    f"{core}: pending report must have an empty library_name and source"
                 )
         else:
             validate_library_name(core, library_name)
@@ -132,6 +136,8 @@ def validate_report_summary(report: dict) -> dict[str, list[dict]]:
                 raise ReportError(
                     f"{core}: {status} row must have an empty library_name"
                 )
+            if row.get("library_name_source", "") != "":
+                raise ReportError(f"{core}: {status} row must have an empty library_name_source")
 
     cache_fields = {"cache_version", "compiled_count", "reused_count"}
     present_cache_fields = cache_fields.intersection(report)
@@ -317,6 +323,9 @@ def command_verify(args: argparse.Namespace) -> None:
             "library_name_status must be 'complete', got "
             f"{report.get('library_name_status')!r}"
         )
+    for core, (row, _) in rows.items():
+        if row.get("library_name_source") not in PROBE_SOURCES:
+            raise ReportError(f"{core}: missing library_name_source; re-probe this checksum")
 
     print(f"complete: {expected_count} checksum-bound MLP1 core library names")
 
@@ -326,6 +335,16 @@ def command_apply(args: argparse.Namespace) -> None:
     require_successful_build(report)
     rows = built_rows(report, args.cores_dir)
     results = read_results(args.results)
+    cache = None
+    if args.cache.is_file():
+        try:
+            cache = json.loads(args.cache.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ReportError(f"cannot read core cache {args.cache}: {error}") from error
+        if (not isinstance(cache, dict) or cache.get("version") != 1
+                or cache.get("platform") != "mlp1"
+                or not isinstance(cache.get("entries"), dict)):
+            raise ReportError(f"invalid core cache: {args.cache}")
 
     missing = sorted(set(rows) - set(results))
     extra = sorted(set(results) - set(rows))
@@ -349,11 +368,19 @@ def command_apply(args: argparse.Namespace) -> None:
                 f"{core}: result checksum {checksum!r} does not match report checksum"
             )
         row["library_name"] = library_name
+        row["library_name_source"] = args.source
+        if cache is not None:
+            entry = cache["entries"].get(core)
+            if isinstance(entry, dict) and entry.get("sha256") == checksum:
+                entry["library_name"] = library_name
+                entry["library_name_source"] = args.source
 
     report["built_count"] = len(rows)
     report["library_name_count"] = len(rows)
     report["library_name_status"] = "complete"
     write_report_atomic(args.report, report)
+    if cache is not None:
+        write_report_atomic(args.cache, cache)
 
 
 def parse_args() -> argparse.Namespace:
@@ -370,9 +397,14 @@ def parse_args() -> argparse.Namespace:
         command.add_argument("--cores-dir", type=Path, required=True)
         if name == "apply":
             command.add_argument("--results", type=Path, required=True)
+            command.add_argument("--source", choices=PROBE_SOURCES, required=True)
+            command.add_argument("--cache", type=Path)
         command.set_defaults(handler=handler)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.command == "apply" and args.cache is None:
+        args.cache = args.report.parent / "core-cache.json"
+    return args
 
 
 def main() -> int:
