@@ -353,9 +353,13 @@ class InfoAndBuilderTest(unittest.TestCase):
         script = build_script()
         self.assertIn('--flycast-fast-umrk-profile-gen)', script)
         self.assertIn('REPORT_PATH="$OUTPUT_DIR/profile-gen/flycast_fast_umrk-generation.txt"', script)
-        self.assertIn('if [[ "$build_mode" != "flycast-profile-gen" ]]; then', script)
-        guard = script.index('if [[ "$build_mode" != "flycast-profile-gen" ]]; then')
-        self.assertIn('"$MLP1_CORE_CACHE_TOOL" update', script[guard:])
+        guard_line = 'if [[ "$build_mode" != "flycast-profile-gen" && "$MLP1_CACHE_ONLY" != 1 ]]; then'
+        self.assertIn(guard_line, script)
+        guard = script.index(guard_line)
+        guarded = script[guard:script.index("\nfi\n", guard)]
+        # The guarded block holds the only cache write in the builder.
+        self.assertEqual(script.count('"$MLP1_CORE_CACHE_TOOL" update'), 1)
+        self.assertIn('"$MLP1_CORE_CACHE_TOOL" update', guarded)
 
 
 def extract_shell_function(name: str) -> str:
