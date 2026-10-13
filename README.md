@@ -243,6 +243,12 @@ commands are retained under `output/mlp1/logs/`. A build row becomes
 flags, none contains an A53 override, and the core-specific graphics, dynarec,
 and ARM64 assembly markers remain present.
 
+YabaSanshiro's patch also lays out the Saturn face buttons for a four-button
+handheld. Upstream puts the Saturn's A, B and C on B, A and L1; the patch puts
+them on Y, B and A, in the same order as on a Saturn pad, and X, Y and Z on L1,
+X and R1. Yabadabadoo-pak's core uses the same layout, so switching a game
+between the two cores doesn't move its buttons.
+
 `--spruce-all` builds the generic `libretro-super` subset and the local
 dedicated lanes, then records unported Spruce cores as deferred. Use the script
 for the current deferred list instead of trusting a static README copy:
