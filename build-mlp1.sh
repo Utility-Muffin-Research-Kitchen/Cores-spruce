@@ -1026,6 +1026,9 @@ copy_core_info() {
 
     # Repo-owned info files win: libretro-super's info directory only knows the
     # cores it builds itself and never carries flycast_fast_umrk_libretro.info.
+    # easyrpg_libretro.info is libretro-super's copy plus a systemid: without
+    # one, RetroArch's GET_STATUS reads a NULL system id and crashes, and
+    # jawakad sends GET_STATUS on every in-game Menu tap.
     if [[ -f "$FLYCAST_FAST_UMRK_INFO_DIR/$info_file" ]]; then
         source_info="$FLYCAST_FAST_UMRK_INFO_DIR/$info_file"
     elif [[ -f "$LIBRETRO_SUPER_SRC_DIR/dist/info/$info_file" ]]; then
@@ -1156,9 +1159,12 @@ build_mgba_core() {
 }
 
 # Stock LoongOS ships neither libinih nor fmt 10, so a core linked against the
-# SDK's shared copies cannot load on the device. fmt and inih are built from
-# their locked sources and linked in statically. liblcf, which Player otherwise
-# clones from master at configure time, comes from its lock pin too.
+# SDK's shared copies cannot load on the device. Its libpixman is Rockchip's
+# build, which hands every composite to the RGA blitter: EasyRPG draws a map as
+# thousands of small tile blits, each a synchronous RGA ioctl, and runs at about
+# 9 fps. fmt, inih and pixman are built from their locked sources and linked in
+# statically. liblcf, which Player otherwise clones from master at configure
+# time, comes from its lock pin too.
 build_easyrpg_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-easyrpg"
     local deps_src="$CORES_WORKDIR/src/easyrpg-deps"
@@ -1182,11 +1188,13 @@ build_easyrpg_core() {
         "-Dfmt_DIR=$deps_prefix/lib/cmake/fmt"
         "-DINIH_INCLUDE_DIR=$deps_prefix/include"
         "-DINIH_LIBRARY=$deps_prefix/lib/libinih.a"
+        "-DPIXMAN_INCLUDE_DIR=$deps_prefix/include/pixman-1"
+        "-DPIXMAN_LIBRARY=$deps_prefix/lib/libpixman-1.a"
         ${toolchain_args[@]+"${toolchain_args[@]}"}
     )
 
     prepare_locked_core easyrpg || return 1
-    for dependency in fmt inih liblcf; do
+    for dependency in fmt inih liblcf pixman; do
         prepare_locked_dependency easyrpg "$dependency" "$deps_src/$dependency" || return 1
     done
 
@@ -1216,13 +1224,28 @@ build_easyrpg_core() {
         "$(cross_ar)" rcs "$deps_prefix/lib/libinih.a" "$deps_build/ini.o" || exit 1
         cp -f "$deps_src/inih/ini.h" "$deps_prefix/include/ini.h" || exit 1
 
+        meson setup "$deps_build/pixman" "$deps_src/pixman" \
+            --cross-file "${CROSS_ROOT:-/opt/mlp1-toolchain}/etc/meson/cross-compilation.conf" \
+            --buildtype=release \
+            --default-library=static \
+            -Db_staticpic=true \
+            "--prefix=$deps_prefix" \
+            --libdir=lib \
+            -Da64-neon=enabled \
+            -Dopenmp=disabled \
+            -Dgtk=disabled \
+            -Dlibpng=disabled \
+            -Dtests=disabled \
+            -Dtimers=false || exit 1
+        ninja -C "$deps_build/pixman" -j"$JOBS" install || exit 1
+
         CC="$(cross_cc)" CXX="$(cross_cxx)" cmake "${cmake_args[@]}" || exit 1
         cmake --build build --target easyrpg_libretro --config Release -- -j"$JOBS" || exit 1
 
         local dynamic
         dynamic="$("${READELF:-$(cross_prefix)-readelf}" -d build/easyrpg_libretro.so)" || exit 1
-        if grep -E 'Shared library: \[lib(inih|INIReader|fmt)\.|\((RPATH|RUNPATH)\)' <<<"$dynamic" >&2; then
-            echo "easyrpg_libretro.so still links the SDK's inih or fmt, or carries an RPATH" >&2
+        if grep -E 'Shared library: \[lib(inih|INIReader|fmt|pixman-1)\.|\((RPATH|RUNPATH)\)' <<<"$dynamic" >&2; then
+            echo "easyrpg_libretro.so still links the SDK's inih, fmt or pixman, or carries an RPATH" >&2
             exit 1
         fi
         cp -f build/easyrpg_libretro.so "$CORES_OUTPUT_DIR/easyrpg_libretro.so" || exit 1
