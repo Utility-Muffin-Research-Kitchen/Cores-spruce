@@ -134,6 +134,14 @@ full commit, checkout path, and recipe identity is pinned in
 branch if a pin cannot be resolved. The dedicated lanes record
 `source_url`, `source_commit`, and `build_lane` in the JSON report.
 
+A lock entry can also pin `dependencies`: libraries a dedicated lane builds from
+source and links into its core. The EasyRPG lane uses this for fmt, inih, and
+liblcf. Stock LoongOS has no libinih and only fmt 9, so a core linked against the
+SDK's shared copies can't load on the device. The lane links fmt and inih
+statically, takes liblcf from its pin instead of Player's configure-time clone of
+`master`, and fails the build if the core still needs `libinih` or `libfmt` or
+carries an RPATH.
+
 The generic np2kai lane applies the repo-owned `patches/mlp1/np2kai.patch`
 after fetching the core. It changes the first-run joypad mode
 from `OFF` to `Arrows`, giving the handheld D-pad and buttons keyboard mappings
@@ -207,7 +215,7 @@ on an `unchanged` line.
 ### Stock-parity cache
 
 `--stock-parity` is incremental. A core is reused only when its locked source,
-recipe identity, managed patch, libretro-super pin, toolchain image, target,
+locked dependencies, recipe identity, managed patch, libretro-super pin, toolchain image, target,
 profile flags, binary checksum, and info-file checksum all match its local cache
 entry. Its JSON row records `build_action` and `input_fingerprint`; the report
 summary records `compiled_count` and `reused_count`.

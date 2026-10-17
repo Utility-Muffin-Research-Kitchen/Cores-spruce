@@ -94,7 +94,37 @@ def lock_entries(args: argparse.Namespace) -> dict[str, dict]:
         checkout = Path(entry["checkout"])
         if checkout.is_absolute() or ".." in checkout.parts:
             raise CacheError(f"{core}: lock checkout must stay under the source directory")
+        validate_dependencies(core, entry.get("dependencies"))
     return entries
+
+
+def is_full_sha(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def validate_dependencies(core: str, dependencies: object) -> None:
+    """Check the optional pinned sources a recipe builds into its core.
+
+    A recipe that compiles a library from source (instead of linking the SDK's
+    shared copy) names it here, so its commit is locked like the core's own.
+    """
+    if dependencies is None:
+        return
+    if not isinstance(dependencies, dict) or not dependencies:
+        raise CacheError(f"{core}: lock dependencies must be a non-empty object")
+    for name, dependency in dependencies.items():
+        if not name or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in name):
+            raise CacheError(f"{core}: lock dependency name is invalid: {name!r}")
+        if not isinstance(dependency, dict) or set(dependency) != {"url", "commit"}:
+            raise CacheError(f"{core}: lock dependency {name} must have exactly url and commit")
+        if not isinstance(dependency["url"], str) or not dependency["url"]:
+            raise CacheError(f"{core}: lock dependency {name} has invalid url")
+        if not is_full_sha(dependency["commit"]):
+            raise CacheError(f"{core}: lock dependency {name} commit must be a lowercase full SHA")
 
 
 def recipe_source_sha256(path: Path, function: str) -> str:
@@ -157,6 +187,10 @@ def curated_inputs(args: argparse.Namespace, core: str, entry: dict) -> dict[str
         if recipe_root is None:
             raise CacheError(f"{core}: --recipe-root is required for a dedicated build recipe")
         extra["recipe_source_sha256"] = recipe_source_sha256(recipe_root / source, function)
+
+    dependencies = entry.get("dependencies")
+    if dependencies:
+        extra["dependencies"] = dependencies
 
     return extra
 
@@ -464,7 +498,16 @@ def command_fingerprint(args: argparse.Namespace) -> None:
 
 def command_lock_value(args: argparse.Namespace) -> None:
     entries = lock_entries(args)
-    print(entries[args.selected_core][args.field])
+    entry = entries[args.selected_core]
+    if args.dependency is None:
+        print(entry[args.field])
+        return
+    dependency = (entry.get("dependencies") or {}).get(args.dependency)
+    if dependency is None:
+        raise CacheError(f"{args.selected_core}: lock has no dependency {args.dependency}")
+    if args.field not in dependency:
+        raise CacheError(f"{args.selected_core}: lock dependency field must be url or commit")
+    print(dependency[args.field])
 
 
 def add_common(parser: argparse.ArgumentParser) -> None:
@@ -507,6 +550,7 @@ def parse_args() -> argparse.Namespace:
             command.add_argument("--selected-core", required=True)
         if name == "lock-value":
             command.add_argument("--field", choices=("url", "commit", "checkout", "recipe"), required=True)
+            command.add_argument("--dependency")
         if name == "update":
             command.add_argument("--report", type=Path, required=True)
         if name == "adopt":
