@@ -136,13 +136,22 @@ branch if a pin cannot be resolved. The dedicated lanes record
 
 A lock entry can also pin `dependencies`: libraries a dedicated lane builds from
 source and links into its core. The EasyRPG lane uses this for fmt, inih,
-liblcf, and pixman. Stock LoongOS has no libinih and only fmt 9, so a core
-linked against the SDK's shared copies can't load on the device. Its libpixman
-is Rockchip's build, which sends every composite to the RGA blitter, and that
-drops a game's map screens to about 9 fps. The lane links fmt, inih, and pixman
-statically, takes liblcf from its pin instead of Player's configure-time clone
-of `master`, and fails the build if the core still needs `libinih`, `libfmt`, or
-`libpixman-1`, or carries an RPATH.
+liblcf, pixman, and its audio codecs. Stock LoongOS has no libinih and only fmt
+9, so a core linked against the SDK's shared copies can't load on the device.
+Its libpixman is Rockchip's build, which sends every composite to the RGA
+blitter, and that drops a game's map screens to about 9 fps. The SDK has no
+audio codecs at all, and Player silently leaves out any it can't find, which
+left only WAV and MIDI music. The lane links fmt, inih, pixman, libogg,
+libvorbis, mpg123, opus, opusfile, and speexdsp's resampler statically, takes
+liblcf from its pin instead of Player's configure-time clone of `master`, and
+fails the build if the core links a shared copy of any of them, is missing an
+Ogg Vorbis, MP3, Opus, or speexdsp entry point, or carries an RPATH.
+
+The mpg123 pin comes from SDL's mirror (`libsdl-org/mpg123`) at the upstream
+`mpg123-1.33.7` release commit, since upstream itself is Subversion. Its CMake
+build asks whether the build host has an FPU by looking for x86's `fpu` flag,
+which no ARM64 Linux host reports, so the lane patches that one check to treat
+ARM64 as having an FPU.
 
 EasyRPG also gets a repo-owned `info/mlp1/easyrpg_libretro.info`: libretro-super's
 copy plus a `systemid`. Without one, RetroArch's `GET_STATUS` command reads a

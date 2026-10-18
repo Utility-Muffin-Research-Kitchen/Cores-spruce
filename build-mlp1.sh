@@ -1158,11 +1158,39 @@ build_mgba_core() {
 
 }
 
+# Configure, build and install one CMake library as a static, position
+# independent archive into a recipe's private prefix.
+build_static_cmake_dependency() {
+    local src_dir="$1"
+    local build_dir="$2"
+    local prefix="$3"
+    shift 3
+    local -a toolchain_args=()
+    if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
+        toolchain_args+=("-DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE")
+    fi
+
+    CC="$(cross_cc)" CXX="$(cross_cxx)" cmake \
+        -S "$src_dir" \
+        -B "$build_dir" \
+        -DCMAKE_BUILD_TYPE=Release \
+        "-DCMAKE_INSTALL_PREFIX=$prefix" \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        ${toolchain_args[@]+"${toolchain_args[@]}"} \
+        "$@" || return 1
+    cmake --build "$build_dir" -- -j"$JOBS" || return 1
+    cmake --install "$build_dir" || return 1
+}
+
 # Stock LoongOS ships neither libinih nor fmt 10, so a core linked against the
 # SDK's shared copies cannot load on the device. Its libpixman is Rockchip's
 # build, which hands every composite to the RGA blitter: EasyRPG draws a map as
 # thousands of small tile blits, each a synchronous RGA ioctl, and runs at about
-# 9 fps. fmt, inih and pixman are built from their locked sources and linked in
+# 9 fps. The SDK has no audio codecs at all, so without them the core plays
+# only WAV and MIDI: no Ogg Vorbis, MP3 or Opus music, and the crude built-in
+# resampler. All of these are built from their locked sources and linked in
 # statically. liblcf, which Player otherwise clones from master at configure
 # time, comes from its lock pin too.
 build_easyrpg_core() {
@@ -1170,7 +1198,7 @@ build_easyrpg_core() {
     local deps_src="$CORES_WORKDIR/src/easyrpg-deps"
     local deps_build="$src_dir/build-deps"
     local deps_prefix="$deps_build/prefix"
-    local dependency
+    local dependency source_file
     local -a toolchain_args=()
     if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
         toolchain_args+=("-DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE")
@@ -1190,11 +1218,22 @@ build_easyrpg_core() {
         "-DINIH_LIBRARY=$deps_prefix/lib/libinih.a"
         "-DPIXMAN_INCLUDE_DIR=$deps_prefix/include/pixman-1"
         "-DPIXMAN_LIBRARY=$deps_prefix/lib/libpixman-1.a"
+        "-DOgg_DIR=$deps_prefix/lib/cmake/Ogg"
+        "-DVorbis_DIR=$deps_prefix/lib/cmake/Vorbis"
+        "-Dmpg123_DIR=$deps_prefix/lib/cmake/mpg123"
+        # Player includes <opus/opusfile.h>, which itself includes
+        # <opus_multistream.h>, so the target needs both directories.
+        "-DOPUSFILE_INCLUDE_DIR=$deps_prefix/include;$deps_prefix/include/opus"
+        "-DOPUSFILE_LIBRARY=$deps_prefix/lib/libopusfile.a"
+        "-DOGG_LIBRARY=$deps_prefix/lib/libogg.a"
+        "-DOPUS_LIBRARY=$deps_prefix/lib/libopus.a"
+        "-DSPEEXDSP_INCLUDE_DIR=$deps_prefix/include"
+        "-DSPEEXDSP_LIBRARY=$deps_prefix/lib/libspeexdsp.a"
         ${toolchain_args[@]+"${toolchain_args[@]}"}
     )
 
     prepare_locked_core easyrpg || return 1
-    for dependency in fmt inih liblcf pixman; do
+    for dependency in fmt inih liblcf pixman ogg vorbis opus opusfile mpg123 speexdsp; do
         prepare_locked_dependency easyrpg "$dependency" "$deps_src/$dependency" || return 1
     done
 
@@ -1204,20 +1243,10 @@ build_easyrpg_core() {
         rm -rf lib/liblcf
         cp -R "$deps_src/liblcf" lib/liblcf || exit 1
 
-        CC="$(cross_cc)" CXX="$(cross_cxx)" cmake \
-            -S "$deps_src/fmt" \
-            -B "$deps_build/fmt" \
-            -DCMAKE_BUILD_TYPE=Release \
-            "-DCMAKE_INSTALL_PREFIX=$deps_prefix" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        build_static_cmake_dependency "$deps_src/fmt" "$deps_build/fmt" "$deps_prefix" \
             -DFMT_DOC=OFF \
             -DFMT_TEST=OFF \
-            -DFMT_INSTALL=ON \
-            ${toolchain_args[@]+"${toolchain_args[@]}"} || exit 1
-        cmake --build "$deps_build/fmt" -- -j"$JOBS" || exit 1
-        cmake --install "$deps_build/fmt" || exit 1
+            -DFMT_INSTALL=ON || exit 1
 
         # liblcf uses only inih's C parser, which is a single file.
         "$(cross_cc)" -O2 -fPIC -c "$deps_src/inih/ini.c" -o "$deps_build/ini.o" || exit 1
@@ -1239,15 +1268,79 @@ build_easyrpg_core() {
             -Dtimers=false || exit 1
         ninja -C "$deps_build/pixman" -j"$JOBS" install || exit 1
 
+        build_static_cmake_dependency "$deps_src/ogg" "$deps_build/ogg" "$deps_prefix" \
+            -DINSTALL_DOCS=OFF \
+            -DINSTALL_PKG_CONFIG_MODULE=OFF \
+            -DBUILD_TESTING=OFF || exit 1
+        # libvorbis finds Ogg through its own module, not Ogg's package config.
+        build_static_cmake_dependency "$deps_src/vorbis" "$deps_build/vorbis" "$deps_prefix" \
+            "-DOGG_INCLUDE_DIR=$deps_prefix/include" \
+            "-DOGG_LIBRARY=$deps_prefix/lib/libogg.a" \
+            -DBUILD_TESTING=OFF || exit 1
+        build_static_cmake_dependency "$deps_src/opus" "$deps_build/opus" "$deps_prefix" \
+            -DOPUS_BUILD_PROGRAMS=OFF \
+            -DOPUS_BUILD_TESTING=OFF \
+            -DOPUS_INSTALL_PKG_CONFIG_MODULE=OFF || exit 1
+        # mpg123 asks CMake whether the build host has an FPU, which reads
+        # /proc/cpuinfo for x86's "fpu" flag and so says no on any ARM64
+        # Linux host. Without one it picks fixed-point math, which its NEON64
+        # decoder refuses to build with. Every ARM64 Linux CPU has an FPU.
+        local fpu_check='if(WIN32 OR (ARCH_IS_ARM64 AND APPLE))'
+        if ! grep -qF "$fpu_check" "$deps_src/mpg123/ports/cmake/src/CMakeLists.txt"; then
+            echo "mpg123's FPU check changed; review the ARM64 override" >&2
+            exit 1
+        fi
+        sed -i 's/if(WIN32 OR (ARCH_IS_ARM64 AND APPLE))/if(WIN32 OR ARCH_IS_ARM64)/' \
+            "$deps_src/mpg123/ports/cmake/src/CMakeLists.txt" || exit 1
+        build_static_cmake_dependency "$deps_src/mpg123/ports/cmake" "$deps_build/mpg123" "$deps_prefix" \
+            -DBUILD_LIBOUT123=OFF || exit 1
+
+        # opusfile 0.12 has no CMake build. Its decoder is four C files; the
+        # optional http.c (network streams) is left out.
+        mkdir -p "$deps_build/opusfile" "$deps_prefix/include/opus" || exit 1
+        for source_file in info internal opusfile stream; do
+            "$(cross_cc)" -O2 -fPIC \
+                -I"$deps_src/opusfile/include" \
+                -I"$deps_prefix/include" \
+                -I"$deps_prefix/include/opus" \
+                -c "$deps_src/opusfile/src/$source_file.c" \
+                -o "$deps_build/opusfile/$source_file.o" || exit 1
+        done
+        "$(cross_ar)" rcs "$deps_prefix/lib/libopusfile.a" "$deps_build"/opusfile/*.o || exit 1
+        cp -f "$deps_src/opusfile/include/opusfile.h" "$deps_prefix/include/opus/opusfile.h" || exit 1
+
+        # Player uses only speexdsp's resampler. Its autotools build generates
+        # speexdsp_config_types.h; the fixed-width types make that a sed job.
+        mkdir -p "$deps_prefix/include/speex" || exit 1
+        cp -f "$deps_src/speexdsp/include/speex/"*.h "$deps_prefix/include/speex/" || exit 1
+        sed -e 's/@INCLUDE_STDINT@/#include <stdint.h>/' \
+            -e 's/@SIZE16@/int16_t/' -e 's/@USIZE16@/uint16_t/' \
+            -e 's/@SIZE32@/int32_t/' -e 's/@USIZE32@/uint32_t/' \
+            "$deps_src/speexdsp/include/speex/speexdsp_config_types.h.in" \
+            >"$deps_prefix/include/speex/speexdsp_config_types.h" || exit 1
+        "$(cross_cc)" -O2 -fPIC -DFLOATING_POINT -DUSE_NEON -DEXPORT= \
+            -I"$deps_prefix/include" \
+            -c "$deps_src/speexdsp/libspeexdsp/resample.c" \
+            -o "$deps_build/resample.o" || exit 1
+        "$(cross_ar)" rcs "$deps_prefix/lib/libspeexdsp.a" "$deps_build/resample.o" || exit 1
+
         CC="$(cross_cc)" CXX="$(cross_cxx)" cmake "${cmake_args[@]}" || exit 1
         cmake --build build --target easyrpg_libretro --config Release -- -j"$JOBS" || exit 1
 
-        local dynamic
+        local dynamic symbols symbol
         dynamic="$("${READELF:-$(cross_prefix)-readelf}" -d build/easyrpg_libretro.so)" || exit 1
-        if grep -E 'Shared library: \[lib(inih|INIReader|fmt|pixman-1)\.|\((RPATH|RUNPATH)\)' <<<"$dynamic" >&2; then
-            echo "easyrpg_libretro.so still links the SDK's inih, fmt or pixman, or carries an RPATH" >&2
+        if grep -E 'Shared library: \[lib(inih|INIReader|fmt|pixman-1|ogg|vorbis|vorbisfile|opus|opusfile|mpg123|speexdsp)\.|\((RPATH|RUNPATH)\)' <<<"$dynamic" >&2; then
+            echo "easyrpg_libretro.so links a shared copy of a bundled library, or carries an RPATH" >&2
             exit 1
         fi
+        # Player skips a codec it cannot find without failing the configure.
+        symbols="$("${NM:-$(cross_prefix)-nm}" build/easyrpg_libretro.so)" || exit 1
+        for symbol in ov_open_callbacks mpg123_init op_open_callbacks speex_resampler_init; do
+            if ! grep -q " [Tt] $symbol\$" <<<"$symbols"; then
+                echo "easyrpg_libretro.so is missing $symbol: a bundled audio codec was not linked" >&2
+                exit 1
+            fi
+        done
         cp -f build/easyrpg_libretro.so "$CORES_OUTPUT_DIR/easyrpg_libretro.so" || exit 1
     )
 }
