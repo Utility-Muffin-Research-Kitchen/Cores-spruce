@@ -175,6 +175,54 @@ class Mlp1CoreCacheTest(unittest.TestCase):
         self.assertIn("miss\tbeta\tinput fingerprint changed", checked.stdout)
         self.assertIn("cache: 1 reused / 1 misses", checked.stdout)
 
+    def lock_dependencies(self, commit: str) -> None:
+        self.lock["cores"]["beta"]["dependencies"] = {
+            "fmt": {"url": "https://example.invalid/fmt.git", "commit": commit},
+        }
+        self.write_json(self.lock_path, self.lock)
+
+    def test_dependencies_keep_other_fingerprints(self) -> None:
+        before = {
+            core: self.run_tool("fingerprint", "--selected-core", core).stdout
+            for core in self.cores
+        }
+        self.lock_dependencies("d" * 40)
+        after = {
+            core: self.run_tool("fingerprint", "--selected-core", core).stdout
+            for core in self.cores
+        }
+        self.assertEqual(after["alpha"], before["alpha"])
+        self.assertNotEqual(after["beta"], before["beta"])
+
+    def test_dependency_pin_change_misses_only_its_core(self) -> None:
+        self.lock_dependencies("d" * 40)
+        self.assertEqual(self.adopt().returncode, 0)
+        self.lock_dependencies("e" * 40)
+        checked = self.run_tool("check")
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertIn("hit\talpha\t", checked.stdout)
+        self.assertIn("miss\tbeta\tinput fingerprint changed", checked.stdout)
+
+    def test_lock_value_reads_dependency_pins(self) -> None:
+        self.lock_dependencies("d" * 40)
+        for field, expected in (("url", "https://example.invalid/fmt.git"), ("commit", "d" * 40)):
+            value = self.run_tool(
+                "lock-value", "--selected-core", "beta", "--dependency", "fmt", "--field", field
+            )
+            self.assertEqual(value.returncode, 0, value.stderr)
+            self.assertEqual(value.stdout.strip(), expected)
+        missing = self.run_tool(
+            "lock-value", "--selected-core", "alpha", "--dependency", "fmt", "--field", "url"
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("lock has no dependency fmt", missing.stderr)
+
+    def test_lock_rejects_unpinned_dependency(self) -> None:
+        self.lock_dependencies("master")
+        checked = self.run_tool("fingerprint", "--selected-core", "alpha")
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertIn("dependency fmt commit must be a lowercase full SHA", checked.stderr)
+
     def test_report_reassembly_preserves_probe_source_for_same_bytes(self) -> None:
         self.assertEqual(self.adopt().returncode, 0)
         report = json.loads(self.report_path.read_text(encoding="utf-8"))

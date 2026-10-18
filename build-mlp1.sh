@@ -1026,6 +1026,9 @@ copy_core_info() {
 
     # Repo-owned info files win: libretro-super's info directory only knows the
     # cores it builds itself and never carries flycast_fast_umrk_libretro.info.
+    # easyrpg_libretro.info is libretro-super's copy plus a systemid: without
+    # one, RetroArch's GET_STATUS reads a NULL system id and crashes, and
+    # jawakad sends GET_STATUS on every in-game Menu tap.
     if [[ -f "$FLYCAST_FAST_UMRK_INFO_DIR/$info_file" ]]; then
         source_info="$FLYCAST_FAST_UMRK_INFO_DIR/$info_file"
     elif [[ -f "$LIBRETRO_SUPER_SRC_DIR/dist/info/$info_file" ]]; then
@@ -1155,8 +1158,23 @@ build_mgba_core() {
 
 }
 
+# Stock LoongOS ships neither libinih nor fmt 10, so a core linked against the
+# SDK's shared copies cannot load on the device. Its libpixman is Rockchip's
+# build, which hands every composite to the RGA blitter: EasyRPG draws a map as
+# thousands of small tile blits, each a synchronous RGA ioctl, and runs at about
+# 9 fps. fmt, inih and pixman are built from their locked sources and linked in
+# statically. liblcf, which Player otherwise clones from master at configure
+# time, comes from its lock pin too.
 build_easyrpg_core() {
     local src_dir="$LIBRETRO_SUPER_SRC_DIR/libretro-easyrpg"
+    local deps_src="$CORES_WORKDIR/src/easyrpg-deps"
+    local deps_build="$src_dir/build-deps"
+    local deps_prefix="$deps_build/prefix"
+    local dependency
+    local -a toolchain_args=()
+    if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
+        toolchain_args+=("-DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE")
+    fi
     local cmake_args=(
         -S .
         -B build
@@ -1164,20 +1182,72 @@ build_easyrpg_core() {
         -DPLAYER_TARGET_PLATFORM=libretro
         -DBUILD_SHARED_LIBS=ON
         -DPLAYER_BUILD_LIBLCF=ON
+        # The toolchain's find root leaves /opt/mlp1-toolchain/lib in the
+        # build-tree RPATH, a path that only exists in the container.
+        -DCMAKE_SKIP_RPATH=ON
+        "-Dfmt_DIR=$deps_prefix/lib/cmake/fmt"
+        "-DINIH_INCLUDE_DIR=$deps_prefix/include"
+        "-DINIH_LIBRARY=$deps_prefix/lib/libinih.a"
+        "-DPIXMAN_INCLUDE_DIR=$deps_prefix/include/pixman-1"
+        "-DPIXMAN_LIBRARY=$deps_prefix/lib/libpixman-1.a"
+        ${toolchain_args[@]+"${toolchain_args[@]}"}
     )
 
     prepare_locked_core easyrpg || return 1
-
-    if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
-        cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE")
-    fi
+    for dependency in fmt inih liblcf pixman; do
+        prepare_locked_dependency easyrpg "$dependency" "$deps_src/$dependency" || return 1
+    done
 
     (
         cd "$src_dir" || exit 1
-        CC="${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}-gcc" \
-            CXX="${CROSS_TRIPLE:-aarch64-buildroot-linux-gnu}-g++" \
-            cmake "${cmake_args[@]}" || exit 1
+        mkdir -p lib "$deps_prefix/include" "$deps_prefix/lib" || exit 1
+        rm -rf lib/liblcf
+        cp -R "$deps_src/liblcf" lib/liblcf || exit 1
+
+        CC="$(cross_cc)" CXX="$(cross_cxx)" cmake \
+            -S "$deps_src/fmt" \
+            -B "$deps_build/fmt" \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_INSTALL_PREFIX=$deps_prefix" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DFMT_DOC=OFF \
+            -DFMT_TEST=OFF \
+            -DFMT_INSTALL=ON \
+            ${toolchain_args[@]+"${toolchain_args[@]}"} || exit 1
+        cmake --build "$deps_build/fmt" -- -j"$JOBS" || exit 1
+        cmake --install "$deps_build/fmt" || exit 1
+
+        # liblcf uses only inih's C parser, which is a single file.
+        "$(cross_cc)" -O2 -fPIC -c "$deps_src/inih/ini.c" -o "$deps_build/ini.o" || exit 1
+        "$(cross_ar)" rcs "$deps_prefix/lib/libinih.a" "$deps_build/ini.o" || exit 1
+        cp -f "$deps_src/inih/ini.h" "$deps_prefix/include/ini.h" || exit 1
+
+        meson setup "$deps_build/pixman" "$deps_src/pixman" \
+            --cross-file "${CROSS_ROOT:-/opt/mlp1-toolchain}/etc/meson/cross-compilation.conf" \
+            --buildtype=release \
+            --default-library=static \
+            -Db_staticpic=true \
+            "--prefix=$deps_prefix" \
+            --libdir=lib \
+            -Da64-neon=enabled \
+            -Dopenmp=disabled \
+            -Dgtk=disabled \
+            -Dlibpng=disabled \
+            -Dtests=disabled \
+            -Dtimers=false || exit 1
+        ninja -C "$deps_build/pixman" -j"$JOBS" install || exit 1
+
+        CC="$(cross_cc)" CXX="$(cross_cxx)" cmake "${cmake_args[@]}" || exit 1
         cmake --build build --target easyrpg_libretro --config Release -- -j"$JOBS" || exit 1
+
+        local dynamic
+        dynamic="$("${READELF:-$(cross_prefix)-readelf}" -d build/easyrpg_libretro.so)" || exit 1
+        if grep -E 'Shared library: \[lib(inih|INIReader|fmt|pixman-1)\.|\((RPATH|RUNPATH)\)' <<<"$dynamic" >&2; then
+            echo "easyrpg_libretro.so still links the SDK's inih, fmt or pixman, or carries an RPATH" >&2
+            exit 1
+        fi
         cp -f build/easyrpg_libretro.so "$CORES_OUTPUT_DIR/easyrpg_libretro.so" || exit 1
     )
 }
@@ -1225,13 +1295,18 @@ core_lock_value() {
         --selected-core "$core" --field "$field"
 }
 
-prepare_locked_core() {
+core_dependency_value() {
     local core="$1"
-    local source_url source_commit checkout src_dir resolved_commit
-    source_url="$(core_lock_value "$core" url)" || return 1
-    source_commit="$(core_lock_value "$core" commit)" || return 1
-    checkout="$(core_lock_value "$core" checkout)" || return 1
-    src_dir="$CORES_WORKDIR/src/$checkout"
+    local dependency="$2"
+    local field="$3"
+    python3 "$MLP1_CORE_CACHE_TOOL" lock-value "${CACHE_ARGS[@]}" \
+        --selected-core "$core" --dependency "$dependency" --field "$field"
+}
+
+checkout_locked_source() {
+    local source_url="$1"
+    local source_commit="$2"
+    local src_dir="$3"
 
     mkdir -p "$(dirname "$src_dir")"
     if [[ ! -d "$src_dir/.git" ]]; then
@@ -1244,6 +1319,35 @@ prepare_locked_core() {
     fi
     git -C "$src_dir" -c advice.detachedHead=false checkout --detach --force "$source_commit" || return 1
     git -C "$src_dir" clean -ffdx || return 1
+}
+
+# Check out a library a dedicated recipe compiles into its core, pinned by the
+# lock entry's "dependencies" the same way the core's own source is.
+prepare_locked_dependency() {
+    local core="$1"
+    local dependency="$2"
+    local src_dir="$3"
+    local source_url source_commit resolved_commit
+    source_url="$(core_dependency_value "$core" "$dependency" url)" || return 1
+    source_commit="$(core_dependency_value "$core" "$dependency" commit)" || return 1
+
+    checkout_locked_source "$source_url" "$source_commit" "$src_dir" || return 1
+    resolved_commit="$(git -C "$src_dir" rev-parse HEAD)"
+    if [[ "$resolved_commit" != "$source_commit" ]]; then
+        echo "$core dependency $dependency resolved commit differs from its lock: $resolved_commit" >&2
+        return 1
+    fi
+}
+
+prepare_locked_core() {
+    local core="$1"
+    local source_url source_commit checkout src_dir resolved_commit
+    source_url="$(core_lock_value "$core" url)" || return 1
+    source_commit="$(core_lock_value "$core" commit)" || return 1
+    checkout="$(core_lock_value "$core" checkout)" || return 1
+    src_dir="$CORES_WORKDIR/src/$checkout"
+
+    checkout_locked_source "$source_url" "$source_commit" "$src_dir" || return 1
     # Some upstream commits contain an unused gitlink without a .gitmodules
     # entry. Initialize declared dependencies, but do not invent URLs for it.
     if [[ -f "$src_dir/.gitmodules" ]]; then

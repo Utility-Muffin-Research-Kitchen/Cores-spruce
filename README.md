@@ -134,6 +134,21 @@ full commit, checkout path, and recipe identity is pinned in
 branch if a pin cannot be resolved. The dedicated lanes record
 `source_url`, `source_commit`, and `build_lane` in the JSON report.
 
+A lock entry can also pin `dependencies`: libraries a dedicated lane builds from
+source and links into its core. The EasyRPG lane uses this for fmt, inih,
+liblcf, and pixman. Stock LoongOS has no libinih and only fmt 9, so a core
+linked against the SDK's shared copies can't load on the device. Its libpixman
+is Rockchip's build, which sends every composite to the RGA blitter, and that
+drops a game's map screens to about 9 fps. The lane links fmt, inih, and pixman
+statically, takes liblcf from its pin instead of Player's configure-time clone
+of `master`, and fails the build if the core still needs `libinih`, `libfmt`, or
+`libpixman-1`, or carries an RPATH.
+
+EasyRPG also gets a repo-owned `info/mlp1/easyrpg_libretro.info`: libretro-super's
+copy plus a `systemid`. Without one, RetroArch's `GET_STATUS` command reads a
+NULL system id and crashes, and Leaf sends `GET_STATUS` on every in-game Menu
+tap.
+
 The generic np2kai lane applies the repo-owned `patches/mlp1/np2kai.patch`
 after fetching the core. It changes the first-run joypad mode
 from `OFF` to `Arrows`, giving the handheld D-pad and buttons keyboard mappings
@@ -207,7 +222,7 @@ on an `unchanged` line.
 ### Stock-parity cache
 
 `--stock-parity` is incremental. A core is reused only when its locked source,
-recipe identity, managed patch, libretro-super pin, toolchain image, target,
+locked dependencies, recipe identity, managed patch, libretro-super pin, toolchain image, target,
 profile flags, binary checksum, and info-file checksum all match its local cache
 entry. Its JSON row records `build_action` and `input_fingerprint`; the report
 summary records `compiled_count` and `reused_count`.
