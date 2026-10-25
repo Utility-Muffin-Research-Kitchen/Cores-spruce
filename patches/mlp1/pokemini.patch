@@ -1,0 +1,35 @@
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 1f8b3c2..5c28f76 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -15,6 +15,7 @@
+ #include <libretro.h>
+ #include <libretro_core_options.h>
+ #include <retro_miscellaneous.h>
++#include <file/file_path.h>
+ #include <streams/file_stream.h>
+ 
+ // PokeMini headers
+@@ -194,7 +195,21 @@ static void DeactivateControllerRumble(void)
+ static void extract_basename(char *buf, const char *path, size_t size)
+ {
+    char *ext        = NULL;
+-	const char *base = strrchr(path, '/');
++	char *delim      = NULL;
++	const char *base = NULL;
++	char archive_path[PMTMPV];
++
++	// RetroArch passes content loaded from an archive as
++	// "<archive>#<member>". Name the EEPROM file after the archive,
++	// the same way RetroArch names save states.
++	strncpy(archive_path, path, sizeof(archive_path) - 1);
++	archive_path[sizeof(archive_path) - 1] = '\0';
++	delim = (char*)path_get_archive_delim(archive_path);
++	if (delim)
++		*delim = '\0';
++	path = archive_path;
++
++	base = strrchr(path, '/');
+ 	if (!base)
+ 		base = strrchr(path, '\\');
+ 	if (!base)

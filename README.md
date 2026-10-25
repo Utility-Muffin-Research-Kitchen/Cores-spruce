@@ -85,7 +85,7 @@ Quick start:
 
 ```sh
 ./build-mlp1.sh                  # genesis_plus_gx vertical slice
-./build-mlp1.sh --stock-parity   # all 30 stock-parity cores
+./build-mlp1.sh --stock-parity   # all 32 stock-parity cores
 ./build-mlp1.sh --spruce-all     # build generic Spruce cores, report deferred
 ```
 
@@ -169,6 +169,12 @@ dedicated RetroArch system subdirectory `BIOS/puae/`. They intentionally do not
 fall back to loose files in `BIOS/`. The PUAE build also brings the pinned
 core-info extension list into line with the core's own `valid_extensions` by
 adding its missing `raw` floppy-image entry.
+
+The generic PokeMini lane applies `patches/mlp1/pokemini.patch`. PokeMini
+writes its own `.eep` save named after the content path, and for a game loaded
+from a ZIP or 7z that path is `<archive>#<member>`. The patch drops the
+`#<member>` part, so `Game.zip` saves to `Game.eep` beside RetroArch's
+`Game.state` instead of `Game.zip#Game.eep`.
 
 ### FlyCast Fast UMRK (April 2022 Flycast, PGO)
 
