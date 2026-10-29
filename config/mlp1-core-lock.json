@@ -26,6 +26,7 @@
     "np2kai": {"url": "https://github.com/libretro/NP2kai.git", "commit": "ac05f003bf44f58a235f5b31de0cd42dabdbf1a8", "checkout": "libretro-super/libretro-np2kai", "recipe": "generic-libretro-super-v1"},
     "pcsx_rearmed": {"url": "https://github.com/libretro/pcsx_rearmed.git", "commit": "da2cb8ecd17fd0932ab6d94774c0522beebce6e3", "checkout": "libretro-super/libretro-pcsx_rearmed", "recipe": "generic-libretro-super-v1"},
     "picodrive": {"url": "https://github.com/libretro/picodrive.git", "commit": "733c711a477a642fd2006d5a7a581b2790ec36b4", "checkout": "libretro-super/libretro-picodrive", "recipe": "generic-libretro-super-v1"},
+    "pokemini": {"url": "https://github.com/libretro/PokeMini.git", "commit": "132111b76343559860532a1ccc094f93f1ed5650", "checkout": "libretro-super/libretro-pokemini", "recipe": "generic-libretro-super-v1"},
     "prosystem": {"url": "https://github.com/libretro/prosystem-libretro.git", "commit": "8a88014287c7a01cd568067e5a557d0a2b2a051f", "checkout": "libretro-super/libretro-prosystem", "recipe": "generic-libretro-super-v1"},
     "puae": {"url": "https://github.com/libretro/libretro-uae.git", "commit": "96ebfcfc2c66233ad37f6dc99ee991211dc719ad", "checkout": "libretro-super/libretro-puae", "recipe": "generic-libretro-super-v1+raw-info"},
     "puae2021": {"url": "https://github.com/libretro/libretro-uae.git", "commit": "6636d5f3fd4417f4e57ab9144fdba35b77fa3a40", "checkout": "libretro-super/libretro-puae2021", "recipe": "generic-libretro-super-v1"},

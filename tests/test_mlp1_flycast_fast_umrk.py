@@ -134,7 +134,7 @@ class LockAndParityTest(unittest.TestCase):
         cores = stock_parity_cores()
         self.assertEqual(sorted(cores), sorted(lock()["cores"]))
         self.assertIn("flycast_fast_umrk", cores)
-        self.assertEqual(len(cores), 31)
+        self.assertEqual(len(cores), 32)
         self.assertEqual(len(set(cores)), len(cores))
 
     def test_dedicated_lane_is_dispatched_by_the_builder(self) -> None:

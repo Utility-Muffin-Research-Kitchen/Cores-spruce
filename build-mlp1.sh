@@ -74,6 +74,7 @@ STOCK_PARITY_CORES=(
     np2kai
     pcsx_rearmed
     picodrive
+    pokemini
     prosystem
     puae
     puae2021
@@ -1715,6 +1716,9 @@ core_tuning_status() {
             ;;
         puae|puae2021)
             printf 'mlp1-bios-subdir'
+            ;;
+        pokemini)
+            printf 'mlp1-archive-save-name'
             ;;
         flycast_fast_umrk)
             printf 'a55-pgo-contract'
